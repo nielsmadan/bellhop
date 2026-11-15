@@ -25,7 +25,11 @@ def build_parser() -> argparse.ArgumentParser:
         allow_abbrev=False,
     )
     parser.add_argument("--version", action="store_true", help="print the version and exit")
-    parser.add_subparsers(dest="command", metavar="COMMAND", parser_class=_Parser)
+    commands = parser.add_subparsers(dest="command", metavar="COMMAND", parser_class=_Parser)
+    sessions = commands.add_parser(
+        "sessions", help="list live Claude, Codex and Pi sessions", allow_abbrev=False
+    )
+    sessions.add_argument("--json", action="store_true", help="print one JSON object")
     return parser
 
 

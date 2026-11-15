@@ -10,8 +10,9 @@ PACKAGE = "bellhop"
 
 LAYERS: tuple[tuple[str, ...], ...] = (
     ("__init__", "codes"),
-    ("errors",),
-    ("jsonout",),
+    ("errors", "models"),
+    ("paths", "jsonout"),
+    ("hls",),
     ("cli",),
     ("__main__",),
 )
@@ -24,8 +25,11 @@ IMPORTS_ALLOWED: Mapping[str, frozenset[str]] = {
     "__init__": frozenset(),
     "codes": frozenset(),
     "errors": frozenset({"codes"}),
-    "jsonout": frozenset({"errors"}),
-    "cli": frozenset({"codes", "errors", "jsonout"}),
+    "models": frozenset(),
+    "paths": frozenset({"codes", "errors"}),
+    "jsonout": frozenset({"errors", "models"}),
+    "hls": frozenset({"errors", "models", "paths"}),
+    "cli": frozenset({"codes", "errors", "hls", "jsonout", "models"}),
     "__main__": frozenset({"cli"}),
 }
 

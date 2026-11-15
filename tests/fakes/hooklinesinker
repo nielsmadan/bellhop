@@ -1,0 +1,18 @@
+#!/bin/sh
+if [ -n "$FAKE_HLS_LOG" ]; then
+    printf '%s\n' "$*" >> "$FAKE_HLS_LOG"
+fi
+if [ -n "$FAKE_HLS_SLOW_ONCE" ] && [ ! -e "$FAKE_HLS_SLOW_ONCE" ]; then
+    : > "$FAKE_HLS_SLOW_ONCE"
+    exec sleep 30
+fi
+if [ -n "$FAKE_HLS_SLOW" ]; then
+    exec sleep 30
+fi
+if [ -n "$FAKE_HLS_STDERR" ]; then
+    printf '%s\n' "$FAKE_HLS_STDERR" >&2
+fi
+if [ -n "$FAKE_HLS_OUTPUT" ]; then
+    cat "$FAKE_HLS_OUTPUT"
+fi
+exit "${FAKE_HLS_EXIT:-0}"
