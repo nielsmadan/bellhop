@@ -1,3 +1,4 @@
+import json
 import shutil
 from datetime import UTC
 from pathlib import Path
@@ -142,3 +143,23 @@ def test_a_cached_rollout_that_disappears_is_looked_up_again(home: Path) -> None
     first.rename(moved)
 
     assert reader.path(session) == moved
+
+
+def test_a_start_prompt_in_the_rollout_counts_as_delivered(tmp_path: Path) -> None:
+    thread = "01a1d948-f680-7000-8000-000000000001"
+    path = tmp_path / f"rollout-2026-11-14T09-00-00-{thread}.jsonl"
+    lines = [
+        {"type": "session_meta", "payload": {"id": thread}},
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "[bellhop bh_9 from x] hi"}],
+            },
+        },
+    ]
+    path.write_text("".join(json.dumps(line) + "\n" for line in lines))
+    session = make_session(thread, harness="codex", transcript_path=path)
+
+    assert CodexTranscripts(None).contains(session, "[bellhop bh_9 from", since=0, prompted=True)

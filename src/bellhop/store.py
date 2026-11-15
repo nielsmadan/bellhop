@@ -606,13 +606,20 @@ def open_start(conn: sqlite3.Connection, before: Binding, after: Binding) -> boo
     )
 
 
-def finish_start(conn: sqlite3.Connection, before: Binding, after: Binding, now: datetime) -> bool:
+def finish_start(
+    conn: sqlite3.Connection,
+    before: Binding,
+    after: Binding,
+    now: datetime,
+    transcript: Path | None = None,
+) -> bool:
     return _settle_start(
         conn,
         before,
         after,
-        "state = 'sent', session_id = ?, sent_at = ?, detail = ?",
-        [after.session_id, iso(now), STARTED_DETAIL],
+        """state = 'sent', session_id = ?, sent_at = ?, detail = ?, transcript_offset = 0,
+        transcript = ?""",
+        [after.session_id, iso(now), STARTED_DETAIL, str(transcript) if transcript else None],
     )
 
 

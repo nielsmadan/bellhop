@@ -68,14 +68,23 @@ def signal_group(server: subprocess.Popen[bytes], signum: int) -> None:
         os.killpg(server.pid, signum)
 
 
-def stop(server: subprocess.Popen[bytes]) -> None:
-    signal_group(server, signal.SIGTERM)
+def exited_unreaped(server: subprocess.Popen[bytes]) -> bool:
+    flags = os.WEXITED | os.WNOHANG | os.WNOWAIT
     try:
-        server.wait(STOP_SECONDS)
-    except subprocess.TimeoutExpired:
-        signal_group(server, signal.SIGKILL)
-        server.wait(STOP_SECONDS)
+        return os.waitid(os.P_PID, server.pid, flags) is not None
+    except ChildProcessError:
+        return True
+
+
+def stop(server: subprocess.Popen[bytes], clock: Callable[[], float] = time.monotonic) -> None:
+    if server.returncode is not None:
+        return
+    signal_group(server, signal.SIGTERM)
+    deadline = clock() + STOP_SECONDS
+    while not exited_unreaped(server) and clock() < deadline:
+        time.sleep(POLL_SECONDS)
     signal_group(server, signal.SIGKILL)
+    server.wait()
 
 
 def wait_for_socket(

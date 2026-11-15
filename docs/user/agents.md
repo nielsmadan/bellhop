@@ -105,32 +105,40 @@ and `bellhop send <agent> TEXT --wake`, under one lock per agent:
   stores its message `failed`; `launch` clears it and starts again.
 - A `--wake` that cannot start the agent stores the message `pending` with a warning naming the
   cause, and leaves the binding alone, so a later wake tries again: no `command`, a `cwd` that is
-  not a directory, or no tmux on `PATH`. `launch` of such an agent is `invalid_config`.
-  `launch_failed` and a `start failed:` binding happen only once tmux was asked to open the
-  session.
+  not a directory, no tmux on `PATH`, an unusable runtime dir (Codex), an environment variable
+  name the child cannot be given, or tmux failing before it opened a session (no answer, no free
+  session name). `launch` of such an agent fails with that cause's error code (`invalid_config`
+  for the configuration causes, `launch_failed` for tmux, `runtime_dir_unsafe` for the runtime
+  dir) and stores nothing. A `start failed:` binding, and a stored `failed` or `outcome unknown`
+  first message, happen only once tmux was asked to open the session.
 - A `hold` message never starts an agent, and `--wake` does nothing for a session target.
   `--confirm` does not wait for a message that starts its agent (a warning says so).
 
 The wake's own message is the start prompt, so it arrives first; messages to the agent that were
 already pending follow, in their own order, once the session is live. Messages queued behind a
-start that then fails stay `pending` until the agent is launched again (or bound), or expire.
+start that then fails stay `pending` until the agent is launched again or a session binds the
+name; messages to an agent do not expire.
 
 `bellhop bind <agent>` takes the same lock and refuses (`binding_conflict`) while the agent is
 `starting`: wait for it to go live, or `launch` it again.
 
-The tmux server a start used is recorded with its pane (`tmux_target`, e.g. `-L fleet enki:%0`),
-and the readiness check and the attach hint always use that server, even if `tmux_socket` has
-changed since. The tmux client itself runs with the allowlist above (plus `TMUX_TMPDIR` and
-`TERM`), so a server it starts does not copy the caller's session or key variables into its
-global environment. The drainer re-reads `config.toml` whenever the file changes.
+The tmux server a start used is recorded with its pane as tmux reports its socket's absolute path
+(`tmux_target`, e.g. `-S /private/tmp/tmux-501/fleet enki:%0`), and the readiness check and the
+attach hint always use that server, whatever `tmux_socket` or `TMUX_TMPDIR` say later. The tmux
+client itself gets only `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `LANG`, `LC_*`, `TMPDIR`,
+`TERM` and `TMUX_TMPDIR`, so a server it starts holds none of the caller's session, key or
+bellhop variables. With an empty `tmux_socket` and no tmux server running, bellhop's
+`new-session` starts your default server with that small environment. The drainer re-reads `config.toml` whenever the file changes. An agent's homes come from the
+config as it is now, so restart a running agent after changing its `env` homes.
 
 `send --wake` and `launch --no-wait` return as soon as the tmux session is open. `launch` waits up
 to 95 s for the drainer to finish the start. The drainer checks each `starting` binding every
 second; it is ready when hooklinesinker lists its session (Claude and Pi: the pre-assigned session
 id; Codex: the thread on its own app server whose first message is the prompt) and its route
 answers (the relay, the extension or the app server). The binding then goes `live` with the
-session's process, the first message becomes `sent` (detail `started with this prompt`; it is not
-confirmed, since a prompt argument is not a relayed delivery), and the queue drains.
+session's process, the first message becomes `sent` (detail `started with this prompt`), and the
+queue drains. The drainer then confirms the first message like any other, from the new
+session's transcript, so it reaches `confirmed`.
 
 ## Failures
 

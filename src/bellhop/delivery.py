@@ -7,6 +7,7 @@ from bellhop.envelope import prefix, render
 from bellhop.models import Message, PushResult, Session, Urgency
 from bellhop.routes import Route
 from bellhop.store import (
+    LAUNCH_ROUTE,
     Push,
     claim,
     confirm,
@@ -110,7 +111,11 @@ def seen(message: Message, session: Session, reader: TranscriptReader | None) ->
     if reader is None or message.transcript_offset is None:
         return False
     return reader.contains(
-        session, prefix(message.id), since=message.transcript_offset, path=message.transcript
+        session,
+        prefix(message.id),
+        since=message.transcript_offset,
+        path=message.transcript,
+        prompted=message.route == LAUNCH_ROUTE,
     )
 
 

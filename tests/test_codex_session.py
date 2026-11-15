@@ -6,7 +6,9 @@ import sys
 import time
 from pathlib import Path
 
-from bellhop.codex_session import parse, remove_socket, session_argv, wait_for_socket
+import pytest
+
+from bellhop.codex_session import parse, remove_socket, session_argv, stop, wait_for_socket
 
 SERVER = """
 import os, sys, time
@@ -168,3 +170,24 @@ def test_the_tui_does_not_inherit_an_ignored_sigint(tmp_path: Path) -> None:
     subprocess.run(argv, env=env(tmp_path), timeout=30, check=False)
 
     assert seen.read_text() == "False"
+
+
+def test_stopping_a_server_twice_never_signals_a_group_the_second_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"], process_group=0
+    )
+    signalled: list[int] = []
+    real = os.killpg
+
+    def recording(pgid: int, signum: int) -> None:
+        signalled.append(signum)
+        real(pgid, signum)
+
+    monkeypatch.setattr(os, "killpg", recording)
+    stop(server)
+    first = list(signalled)
+    stop(server)
+
+    assert (first[0], signalled) == (signal.SIGTERM, first)

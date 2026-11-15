@@ -12,6 +12,7 @@ from bellhop.transcripts.common import (
 )
 
 RECEIVED_ORIGINS = frozenset({"peer", "channel", "plugin"})
+TYPED_ORIGINS = frozenset({None, "human"})
 UNSAFE_PATH = re.compile(r"[^A-Za-z0-9]")
 PEER_WRAPPER = "Another Claude session sent a message:\n"
 HEADER_LINES = 50
@@ -45,6 +46,17 @@ def delivered(record: dict[str, object], prefix: str) -> bool:
         text.removeprefix(PEER_WRAPPER).lstrip().startswith(prefix)
         for text in received_texts(record)
     )
+
+
+def given(record: dict[str, object], prefix: str) -> bool:
+    message = record.get("message")
+    prompt = (
+        record.get("type") == "user"
+        and origin_kind(record.get("origin")) in TYPED_ORIGINS
+        and isinstance(message, dict)
+        and content_text(message.get("content")).lstrip().startswith(prefix)
+    )
+    return prompt or delivered(record, prefix)
 
 
 def owner_of(path: Path) -> object:
@@ -92,9 +104,15 @@ class ClaudeTranscripts:
             return None
 
     def contains(
-        self, session: Session, prefix: str, *, since: int, path: Path | None = None
+        self,
+        session: Session,
+        prefix: str,
+        *,
+        since: int,
+        path: Path | None = None,
+        prompted: bool = False,
     ) -> bool:
         path = path or self.path(session)
         if path is None or not path.is_file() or not belongs(path, session):
             return False
-        return self._cursors.scan(path, prefix, since, delivered)
+        return self._cursors.scan(path, prefix, since, given if prompted else delivered)

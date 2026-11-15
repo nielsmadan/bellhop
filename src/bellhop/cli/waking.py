@@ -7,7 +7,14 @@ from bellhop.cli.context import Context
 from bellhop.codes import INVALID_CONFIG, LAUNCH_FAILED
 from bellhop.errors import BellhopError
 from bellhop.identity import ProcessTable, alive
-from bellhop.launch import StartSetup, agent_lock, begin, cannot_launch, decide
+from bellhop.launch import (
+    CannotLaunch,
+    StartSetup,
+    agent_lock,
+    begin,
+    cannot_launch,
+    decide,
+)
 from bellhop.models import Binding, Message
 from bellhop.runtime import resolve_runtime_dir
 from bellhop.store import insert_message
@@ -82,9 +89,15 @@ def wake(agent: str, message: Message | None, cause: str, ctx: Context, *, retry
         if reason is not None or configured is None:
             ctx.warnings.append(f"cannot launch '{agent}': {reason}; the message waits")
             return Woken("stored", store(ctx, message), binding)
-        stored, started = begin(
-            ctx.conn, configured, message, cause=cause, setup=setup(ctx), now=ctx.now()
-        )
+        try:
+            stored, started = begin(
+                ctx.conn, configured, message, cause=cause, setup=setup(ctx), now=ctx.now()
+            )
+        except CannotLaunch as error:
+            if retry:
+                raise
+            ctx.warnings.append(f"cannot launch '{agent}': {error}; the message waits")
+            return Woken("stored", store(ctx, message), binding)
     ctx.forget_bindings()
     ctx.kick(again=True)
     return Woken("start" if started is not None else "stored", stored, started or binding)

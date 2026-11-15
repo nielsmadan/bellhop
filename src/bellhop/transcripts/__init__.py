@@ -16,7 +16,13 @@ class TranscriptReader(Protocol):
     def size(self, session: Session) -> int | None: ...
 
     def contains(
-        self, session: Session, prefix: str, *, since: int, path: Path | None = None
+        self,
+        session: Session,
+        prefix: str,
+        *,
+        since: int,
+        path: Path | None = None,
+        prompted: bool = False,
     ) -> bool: ...
 
 
@@ -43,7 +49,13 @@ class PlainTranscripts:
             return None
 
     def contains(
-        self, session: Session, prefix: str, *, since: int, path: Path | None = None
+        self,
+        session: Session,
+        prefix: str,
+        *,
+        since: int,
+        path: Path | None = None,
+        prompted: bool = False,
     ) -> bool:
         path = path or session.transcript_path
         if path is None:

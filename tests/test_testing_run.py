@@ -27,6 +27,7 @@ from bellhop.testing.run import (
     remove_codex_sockets,
     stop_drainer,
 )
+from bellhop.testing.tmux import SmokeTmux
 
 FAKES = Path(__file__).resolve().parent / "fakes"
 CLAUDE_READY = "❯ \n  ⏸ manual mode on · ? for shortcuts\n"
@@ -717,3 +718,23 @@ def test_a_drainer_outside_any_smoke_run_is_never_stopped(tmp_path: Path) -> Non
         real.wait(5)
 
     assert (str(reply).startswith("skipped the drainer stop"), alive) == (True, True)
+
+
+def test_teardown_stops_the_drainer_after_the_agents_and_their_server(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    order: list[str] = []
+    monkeypatch.setattr(SmokeTmux, "kill_server", lambda self: order.append("kill-server"))
+
+    def survivors(self: SmokeRun) -> list[str]:
+        order.append("agents")
+        return []
+
+    monkeypatch.setattr(SmokeRun, "_stop_survivors", survivors)
+    monkeypatch.setattr(SmokeRun, "stop_drainer", lambda self: order.append("drainer"))
+    run = fake_run(tmp_path, run_id="20261113-000000-acac")
+
+    with run:
+        pass
+
+    assert order[-3:] == ["kill-server", "agents", "drainer"]

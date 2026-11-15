@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 from pathlib import Path
@@ -207,4 +208,25 @@ def test_a_recorded_file_of_another_session_never_confirms(mixed: Path) -> None:
             session, prefix("bh_cccccccccccc"), since=0, path=mixed
         )
         is False
+    )
+
+
+def test_a_start_prompt_in_the_session_file_counts_as_delivered(tmp_path: Path) -> None:
+    session_id = "9f1d2c3b-0000-4000-8000-00000000pi09"
+    path = tmp_path / "start.jsonl"
+    lines = [
+        {"type": "session", "id": session_id},
+        {
+            "type": "message",
+            "message": {
+                "role": "user",
+                "content": [{"type": "text", "text": "[bellhop bh_9 from x] hi"}],
+            },
+        },
+    ]
+    path.write_text("".join(json.dumps(line) + "\n" for line in lines))
+    session = make_session(session_id, harness="pi", transcript_path=path)
+
+    assert PiTranscripts(None).contains(
+        session, "[bellhop bh_9 from", since=0, path=path, prompted=True
     )

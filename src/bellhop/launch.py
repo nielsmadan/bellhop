@@ -204,43 +204,47 @@ def begin(
     now: datetime,
 ) -> tuple[Message | None, Binding | None]:
     cwd = working_dir(agent, setup.env)
-    start = plan_start(
-        agent,
-        prompt_for(conn, message),
-        runtime_dir=setup.runtime_dir,
-        python=setup.python,
-        new_id=setup.new_id,
-    )
-    argv = scrubbed(child_env(setup.env, agent), start.argv)
+    tmux = setup.tmux
+    try:
+        start = plan_start(
+            agent,
+            prompt_for(conn, message),
+            runtime_dir=setup.runtime_dir,
+            python=setup.python,
+            new_id=setup.new_id,
+        )
+        argv = scrubbed(child_env(setup.env, agent), start.argv)
+        name = tmux.free_name(agent.name)
+    except BellhopError as error:
+        raise CannotLaunch(str(error), code=error.code) from error
     launched = replace(message, route=LAUNCH_ROUTE) if message is not None else None
     stored, starting = begin_start(
         conn, starting_binding(agent, start, cause=cause, now=now), launched, now
     )
     if starting is None:
         return stored, None
-    tmux = setup.tmux
     try:
-        name = tmux.free_name(agent.name)
-    except BellhopError as error:
-        raise refused(conn, starting, stored, str(error), now, prompted=False) from error
-    try:
-        pane = tmux.new_session(name, cwd, argv)
+        place = tmux.new_session(name, cwd, argv)
     except TmuxTimeout as error:
-        found = pane_or_none(tmux, name)
+        found = located(tmux, name)
         if found is None:
             reason = f"{error}; it may have started: attach with: {tmux.attach_hint(name)}"
             raise refused(conn, starting, stored, reason, now, prompted=True) from error
-        pane = found
+        place = found
     except BellhopError as error:
         raise refused(conn, starting, stored, str(error), now, prompted=False) from error
-    opened = replace(starting, tmux_target=tmux_target(Place(tmux.socket, name, pane)))
+    opened = replace(starting, tmux_target=tmux_target(place))
     open_start(conn, starting, opened)
     return stored, opened
 
 
-def pane_or_none(tmux: Tmux, name: str) -> str | None:
+class CannotLaunch(BellhopError):
+    pass
+
+
+def located(tmux: Tmux, name: str) -> Place | None:
     try:
-        return tmux.pane_of(name)
+        return tmux.locate(name)
     except BellhopError:
         return None
 

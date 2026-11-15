@@ -19,9 +19,9 @@ def fake(fake_tmux: FakeTmux) -> Fake:
 def test_a_new_session_is_detached_named_sized_in_its_cwd_and_runs_the_argv_as_given(
     fake: Fake, fake_tmux: FakeTmux, tmp_path: Path
 ) -> None:
-    pane = fake().new_session("enki", tmp_path, ["/usr/bin/env", "-i", "/bin/a b", "x; y"])
+    place = fake().new_session("enki", tmp_path, ["/usr/bin/env", "-i", "/bin/a b", "x; y"])
 
-    assert pane == "%0"
+    assert place == Place(str(fake_tmux.directory / "socket"), "enki", "%0")
     assert fake_tmux.calls()[-1] == [
         "-L",
         "bellhop-test",
@@ -29,7 +29,7 @@ def test_a_new_session_is_detached_named_sized_in_its_cwd_and_runs_the_argv_as_g
         "-d",
         "-P",
         "-F",
-        "#{pane_id}",
+        "#{pane_id} #{socket_path}",
         "-s",
         "enki",
         "-x",
@@ -63,6 +63,7 @@ def test_the_client_runs_with_the_allowlist_only(
         monkeypatch.setenv(name, "x")
     monkeypatch.setenv("TMUX_TMPDIR", str(tmp_path))
     monkeypatch.setenv("LC_CTYPE", "UTF-8")
+    monkeypatch.setenv("SOPS_SECRETS", "/store")
 
     fake().new_session("enki", tmp_path, ["/bin/true", "x"])
 
@@ -74,6 +75,9 @@ def test_the_client_runs_with_the_allowlist_only(
         "TMUX_PANE",
     }.isdisjoint(fake_tmux.client_env())
     assert {"PATH", "HOME", "TMUX_TMPDIR", "LC_CTYPE"} <= set(fake_tmux.client_env())
+    assert {"SOPS_SECRETS", "BELLHOP_RUNTIME_DIR", "XDG_STATE_HOME"}.isdisjoint(
+        fake_tmux.client_env()
+    )
 
 
 def test_a_free_name_skips_sessions_that_already_exist(fake: Fake, fake_tmux: FakeTmux) -> None:
@@ -104,10 +108,15 @@ def test_a_closed_pane_captures_as_none(fake: Fake, fake_tmux: FakeTmux) -> None
     assert (shown, fake().capture("%0")) == ("hello\n", None)
 
 
-def test_a_session_s_pane_is_found_by_name(fake: Fake, fake_tmux: FakeTmux) -> None:
+def test_a_session_is_located_by_name_with_its_server_s_socket(
+    fake: Fake, fake_tmux: FakeTmux
+) -> None:
     fake_tmux.occupy("enki")
 
-    assert (fake().pane_of("enki"), fake().pane_of("ghost")) == ("%9", None)
+    assert (fake().locate("enki"), fake().locate("ghost")) == (
+        Place(str(fake_tmux.directory / "socket"), "enki", "%9"),
+        None,
+    )
 
 
 def test_a_refused_command_is_a_launch_failure_with_tmux_s_reason(

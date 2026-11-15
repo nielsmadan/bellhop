@@ -212,9 +212,18 @@ def _report(state: State, target: tuple[TargetKind, str], error: Exception) -> N
     state.errors[target] = text
 
 
-def _settle(deps: Deps, binding: Binding, progress: Progress, now: datetime) -> None:
+def first_transcript(deps: Deps, live: Binding, sessions: Sequence[Session]) -> Path | None:
+    session = next((s for s in sessions if s.session_id == live.session_id), None)
+    reader = deps.readers(session, live) if session is not None else None
+    return reader.path(session) if reader is not None and session is not None else None
+
+
+def _settle(
+    deps: Deps, binding: Binding, progress: Progress, sessions: Sequence[Session], now: datetime
+) -> None:
     if progress.state == "ready":
-        finish_start(deps.conn, binding, progress.binding, now)
+        transcript = first_transcript(deps, progress.binding, sessions)
+        finish_start(deps.conn, binding, progress.binding, now, transcript)
     elif progress.state == "failed":
         prompted = binding.tmux_target is not None
         fail_start(deps.conn, binding, progress.binding, now, prompted=prompted)
@@ -233,7 +242,7 @@ def _complete_start(
             return
         reason = f"not ready after {STARTUP.seconds}s ({type(error).__name__}: {error})"
         progress = failure(binding, reason, now)
-    _settle(deps, binding, progress, now)
+    _settle(deps, binding, progress, sessions, now)
 
 
 def _complete_starts(
@@ -324,6 +333,12 @@ def run(deps: Deps, lock: Lock) -> int:
             delay = backoff(state.failures)
             print(f"bellhop: drainer: {error}; retrying in {delay:g}s", file=sys.stderr, flush=True)
         deps.sleep(delay)
+
+
+def drainer_starts(
+    conn: sqlite3.Connection, routes: RouteFinder, env: Mapping[str, str]
+) -> StartCheck:
+    return start_checker(conn, routes, lambda socket: tmux_for(env, socket))
 
 
 def keeping_config(error: Exception) -> None:
@@ -421,7 +436,7 @@ def main(env: Mapping[str, str]) -> int:
         table=process_table,
         now=lambda: datetime.now(UTC),
         sleep=time.sleep,
-        starts=start_checker(conn, wiring.routes, lambda socket: tmux_for(env, socket)),
+        starts=drainer_starts(conn, wiring.routes, env),
     )
     try:
         return run(deps, lock)

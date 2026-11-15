@@ -75,7 +75,13 @@ class CodexTranscripts:
             return None
 
     def contains(
-        self, session: Session, prefix: str, *, since: int, path: Path | None = None
+        self,
+        session: Session,
+        prefix: str,
+        *,
+        since: int,
+        path: Path | None = None,
+        prompted: bool = False,
     ) -> bool:
         path = path or self.path(session)
         if path is None or not path.is_file() or not belongs(path, session):

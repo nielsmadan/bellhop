@@ -32,7 +32,7 @@ from bellhop.store import (
     get_messages,
     launch_message,
 )
-from bellhop.tmux import Tmux, TmuxTimeout
+from bellhop.tmux import Place, Tmux, TmuxTimeout
 from conftest import (
     ALPHA,
     CLAUDE_TRUST,
@@ -142,7 +142,7 @@ def test_a_wake_starts_a_stopped_agent_in_its_own_tmux_session_and_returns_at_on
     assert (binding.state, binding.cause, binding.tmux_target) == (
         "starting",
         "send --wake from x",
-        "-L bellhop-test enki:%0",
+        f"-S {fake_tmux.directory / 'socket'} enki:%0",
     )
     check_golden("send-wake", payload)
 
@@ -237,7 +237,11 @@ def test_a_failed_start_makes_the_next_wake_fail_fast_and_launch_retries(
     code, failed = agents.run("send", "enki", "second", "--wake")
     retry_code, retried = agents.run("launch", "enki", "--no-wait", "--cause", "ci failed")
 
-    detail = f"{START_FAILED}: stopped at the trust-folder screen; attach with: tmux -L bellhop-test attach -t =enki"
+    socket = fake_tmux.directory / "socket"
+    detail = (
+        f"{START_FAILED}: stopped at the trust-folder screen; attach with: "
+        f"tmux -S {socket} attach -t =enki"
+    )
     assert (code, failed["error"]["code"]) == (1, "launch_failed")
     assert failed["error"]["message"] == (
         f"cannot wake 'enki': {detail}; run `bellhop launch enki` to retry"
@@ -256,7 +260,7 @@ def test_a_failed_start_makes_the_next_wake_fail_fast_and_launch_retries(
         ("sent", f"outcome unknown; {detail}"),
         ("failed", detail),
     ]
-    check_golden("send-wake-failed", failed)
+    check_golden("send-wake-failed", failed, {str(socket): "<tmux-socket>"})
     check_golden(
         "launch-started", retried, {retried["agent"]["binding"]["session_id"]: "<session-id>"}
     )
@@ -459,12 +463,16 @@ def test_launching_an_unknown_agent_suggests_close_names(agents: Bell) -> None:
 
 
 def test_launch_prints_where_the_agent_runs(
-    agents: Bell, capsys: pytest.CaptureFixture[str]
+    agents: Bell, fake_tmux: FakeTmux, capsys: pytest.CaptureFixture[str]
 ) -> None:
     code = main(["launch", "enki", "--no-wait", "--prompt", "hi", "--from", "ops"])
 
     first, second = capsys.readouterr().out.splitlines()
-    assert (code, first.split()[:2], first.endswith("(tmux -L bellhop-test enki:%0)")) == (
+    assert (
+        code,
+        first.split()[:2],
+        first.endswith(f"(tmux -S {fake_tmux.directory / 'socket'} enki:%0)"),
+    ) == (
         0,
         ["enki", "starting"],
         True,
@@ -643,7 +651,7 @@ def test_a_new_session_that_times_out_is_looked_up_before_it_is_called_failed(
         )
         assert "attach with: tmux -L bellhop-test attach -t =enki" in str(binding.detail)
     else:
-        assert binding.tmux_target == "-L bellhop-test enki:%0"
+        assert binding.tmux_target == f"-S {fake_tmux.directory / 'socket'} enki:%0"
 
 
 def test_bind_waits_for_a_start_and_refuses_while_it_runs(
@@ -669,7 +677,7 @@ def test_a_repeated_launch_key_answers_in_launch_s_shape(agents: Bell) -> None:
     assert (again["agent"]["agent"], again["agent"]["binding"]["state"]) == ("enki", "starting")
 
 
-def test_a_list_sessions_timeout_fails_the_start_before_tmux_was_asked(
+def test_a_list_sessions_timeout_stores_the_wake_without_touching_the_binding(
     agents: Bell, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def hung(self: Tmux) -> set[str]:
@@ -679,9 +687,10 @@ def test_a_list_sessions_timeout_fails_the_start_before_tmux_was_asked(
 
     _, payload = agents.run("send", "enki", "hi", "--wake")
 
-    assert (payload["error"]["code"], payload_message(payload)["state"]) == (
-        "launch_failed",
-        "failed",
+    assert (payload_message(payload)["state"], stored_binding(agents), payload["warnings"]) == (
+        "pending",
+        None,
+        ["cannot launch 'enki': tmux list-sessions gave no answer within 5s; the message waits"],
     )
 
 
@@ -691,10 +700,10 @@ def test_a_new_session_timeout_whose_lookup_also_fails_is_outcome_unknown(
     monkeypatch.setattr("bellhop.tmux.TMUX_SECONDS", 0.5)
     fake_tmux.hang()
 
-    def unanswered(self: Tmux, name: str) -> str | None:
+    def unanswered(self: Tmux, name: str) -> Place | None:
         raise TmuxTimeout("tmux display-message gave no answer within 0.5s", code="launch_failed")
 
-    monkeypatch.setattr(Tmux, "pane_of", unanswered)
+    monkeypatch.setattr(Tmux, "locate", unanswered)
 
     _, payload = agents.run("send", "enki", "hi", "--wake")
 
@@ -716,3 +725,54 @@ def test_launching_a_live_agent_sends_whatever_its_start_settings_say(
     code, payload = bell.run("launch", "enki", "--prompt", "hi")
 
     assert (code, payload_message(payload)["state"]) == (0, "sent")
+
+
+@pytest.mark.parametrize("cause", ["runtime", "locale", "names", "tmux"])
+def test_a_wake_stopped_before_tmux_opens_a_session_stores_its_message(
+    agents: Bell, fake_tmux: FakeTmux, monkeypatch: pytest.MonkeyPatch, cause: str
+) -> None:
+    agent = "nanna" if cause == "runtime" else "enki"
+    if cause == "runtime":
+        unsafe = agents.tmp / "runtime-file"
+        unsafe.write_text("")
+        monkeypatch.setenv("BELLHOP_RUNTIME_DIR", str(unsafe))
+    if cause == "locale":
+        monkeypatch.setenv("LC_BAD-NAME", "x")
+    if cause == "names":
+        for name in ["enki", *(f"enki-{n}" for n in range(2, 10))]:
+            fake_tmux.occupy(name)
+    if cause == "tmux":
+        broken = agents.tmp / "broken-bin"
+        broken.mkdir()
+        (broken / "tmux").write_text("#!/no/such/interpreter\n")
+        (broken / "tmux").chmod(0o755)
+        monkeypatch.setenv("PATH", f"{broken}{os.pathsep}{os.environ['PATH']}")
+
+    code, payload = agents.run("send", agent, "hi", "--wake")
+
+    conn = database(agents)
+    binding = get_binding(conn, agent)
+    conn.close()
+    assert (code, payload_message(payload)["state"], binding) == (0, "pending", None)
+    assert payload["warnings"][0].startswith(f"cannot launch '{agent}': ")
+
+
+def test_bind_waits_for_the_agent_lock(agents: Bell, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", ALPHA)
+    monkeypatch.setattr(sys, "stdin", None)
+    binder = threading.Thread(target=main, args=(["bind", "enki", "--json"],))
+    with agent_lock(os.environ, "enki"):
+        binder.start()
+        binder.join(1.0)
+        waiting = binder.is_alive()
+    binder.join(30)
+    agents.capsys.readouterr()
+
+    assert (waiting, binding_row(agents)["session_id"]) == (True, ALPHA)
+
+
+def test_a_wake_with_confirm_says_it_does_not_wait(agents: Bell) -> None:
+    _, payload = agents.run("send", "enki", "hi", "--wake", "--from", "x", "--confirm", "5")
+
+    assert payload["warnings"] == ["--confirm does not wait for a message that starts its agent"]
+    check_golden("send-wake-confirm", payload)

@@ -20,6 +20,7 @@ from bellhop.drain import (
     backoff,
     drainer_argv,
     drainer_env,
+    drainer_starts,
     rotate_log,
     run,
     start_drainer,
@@ -42,7 +43,7 @@ from bellhop.store import (
     save_binding,
 )
 from bellhop.transcripts import PlainTranscripts
-from conftest import FAKE_HLS, NOW, STARTED, FakeHls, make_message, make_session
+from conftest import FAKE_HLS, NOW, STARTED, FakeHls, FakeTmux, make_message, make_session
 
 ENKI = Binding("enki", "claude", "live", "s1", 4242, STARTED, None, None, None, "bind", None, NOW)
 
@@ -873,3 +874,56 @@ def test_a_start_fails_at_its_deadline_even_while_hls_is_unavailable(
     binding = get_binding(world.conn, "enki")
     assert binding is not None
     assert binding.state == state
+
+
+def test_a_start_prompt_is_confirmed_from_the_new_session_s_transcript(
+    world: World, tmp_path: Path
+) -> None:
+    transcript = tmp_path / "s1.jsonl"
+    transcript.write_text("")
+    world.sessions = [make_session("s1", transcript_path=transcript)]
+    world.reader = PlainTranscripts()
+    launched(world)
+    deps = replace(
+        world.deps, starts=checked("ready", state="live", pid=4242, process_started_at=STARTED)
+    )
+    state = State()
+    tick(deps, state)
+    transcript.write_text("[bellhop bh_000000000001 from enki] body 1\n")
+
+    tick(deps, state)
+
+    message = get_message(world.conn, "bh_000000000001")
+    assert (message.state, message.transcript_offset, message.transcript) == (
+        "confirmed",
+        0,
+        transcript,
+    )
+
+
+def test_a_start_prompt_of_unknown_outcome_is_never_confirmed(world: World, tmp_path: Path) -> None:
+    transcript = tmp_path / "s1.jsonl"
+    transcript.write_text("[bellhop bh_000000000001 from enki] body 1\n")
+    world.sessions = [make_session("s1", transcript_path=transcript)]
+    world.reader = PlainTranscripts()
+    launched(world)
+    state = State()
+    tick(
+        replace(world.deps, starts=checked("failed", state="failed", detail="start failed: x")),
+        state,
+    )
+
+    tick(world.deps, state)
+
+    message = get_message(world.conn, "bh_000000000001")
+    assert (message.state, message.detail) == ("sent", "outcome unknown; start failed: x")
+
+
+def test_the_drainer_checks_a_start_on_the_server_it_was_recorded_on(
+    world: World, fake_tmux: FakeTmux
+) -> None:
+    check = drainer_starts(world.conn, lambda s, b: world.route, dict(os.environ))
+
+    check(replace(STARTING, tmux_target="-S /srv/tmux/fleet enki:%3"), [], NOW)
+
+    assert fake_tmux.calls()[-1][:2] == ["-S", "/srv/tmux/fleet"]

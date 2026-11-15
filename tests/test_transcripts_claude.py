@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -113,3 +114,33 @@ def test_a_message_claude_only_held_is_not_a_delivery() -> None:
     )
 
     assert ClaudeTranscripts().contains(session, "ACK-REQUEST 4ebf4109", since=0) is False
+
+
+def first_prompt_transcript(tmp_path: Path, session: str, origin: object) -> Path:
+    path = tmp_path / "first.jsonl"
+    prompt: dict[str, object] = {
+        "type": "user",
+        "sessionId": session,
+        "message": {"role": "user", "content": "[bellhop bh_9 from x] hi"},
+    }
+    if origin is not None:
+        prompt["origin"] = origin
+    reply = {"type": "assistant", "sessionId": session, "message": {"role": "assistant"}}
+    path.write_text(json.dumps(prompt) + "\n" + json.dumps(reply) + "\n")
+    return path
+
+
+@pytest.mark.parametrize("origin", [None, {"kind": "human"}])
+def test_a_start_prompt_is_found_only_when_it_was_passed_as_one(
+    tmp_path: Path, origin: object
+) -> None:
+    session = make_session(RELAY_ID, harness="claude", transcript_path=None)
+    path = first_prompt_transcript(tmp_path, RELAY_ID, origin)
+    reader = ClaudeTranscripts()
+
+    found = [
+        reader.contains(session, "[bellhop bh_9 from", since=0, path=path, prompted=prompted)
+        for prompted in (True, False)
+    ]
+
+    assert found == [True, False]

@@ -94,9 +94,10 @@ class LaunchCells:
         whole = arrived_whole(
             self.run.layout.root, f"[bellhop {first.get('id')} from smoke] {body}"
         )
+        settled_first = wait_for(lambda: confirmed(self.env, first.get("id")), float(CONFIRM), 2)
         _, status = bellhop(self.env, "status", str(first.get("id")))
         rows = status.get("messages")
-        first_after = rows[0] if isinstance(rows, list) and rows else {}
+        first_after = settled_first or (rows[0] if isinstance(rows, list) and rows else {})
         again_code, again = bellhop(
             self.env,
             "send",
@@ -121,7 +122,7 @@ class LaunchCells:
             and took < 2
             and whole
             and isinstance(first_after, dict)
-            and first_after.get("state") == "sent"
+            and first_after.get("state") == "confirmed"
             and first_after.get("route") == "launch"
             and again_code == 0
             and second.get("state") == "confirmed"

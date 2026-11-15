@@ -6,14 +6,17 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from bellhop.allowlist import passed
+from bellhop.allowlist import LOCALE_PREFIX
 from bellhop.codes import LAUNCH_FAILED
 from bellhop.errors import BellhopError
 
 TMUX_SECONDS = 5.0
 WIDTH, HEIGHT = 200, 50
 NAME_TRIES = 9
-CLIENT_EXTRA = ("TMUX_TMPDIR", "TERM")
+CLIENT_ENV = frozenset(
+    {"PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "TMPDIR", "TERM", "TMUX_TMPDIR"}
+)
+LOCATION = "#{pane_id} #{socket_path}"
 
 
 class TmuxTimeout(BellhopError):
@@ -55,7 +58,16 @@ def escaped(argument: str) -> str:
 
 
 def client_env(env: Mapping[str, str]) -> dict[str, str]:
-    return passed(env, CLIENT_EXTRA)
+    return {
+        name: value
+        for name, value in env.items()
+        if name in CLIENT_ENV or name.startswith(LOCALE_PREFIX)
+    }
+
+
+def place_of(name: str, line: str) -> Place | None:
+    pane, _, socket = line.strip().partition(" ")
+    return Place(socket, name, pane) if pane and socket.startswith("/") else None
 
 
 @dataclass(frozen=True)
@@ -107,13 +119,13 @@ class Tmux:
             )
         return free
 
-    def new_session(self, name: str, cwd: Path, argv: Sequence[str]) -> str:
-        return self.run(
+    def new_session(self, name: str, cwd: Path, argv: Sequence[str]) -> Place:
+        line = self.run(
             "new-session",
             "-d",
             "-P",
             "-F",
-            "#{pane_id}",
+            LOCATION,
             "-s",
             name,
             "-x",
@@ -124,12 +136,17 @@ class Tmux:
             escaped(str(cwd)),
             "--",
             *map(escaped, argv),
-        ).strip()
+        )
+        found = place_of(name, line)
+        if found is None:
+            raise BellhopError(
+                f"tmux new-session gave no pane: {line.strip()!r}", code=LAUNCH_FAILED
+            )
+        return found
 
-    def pane_of(self, name: str) -> str | None:
-        done = self._run("display-message", "-p", "-t", f"={name}:", "#{pane_id}")
-        pane = done.stdout.strip()
-        return pane if done.returncode == 0 and pane else None
+    def locate(self, name: str) -> Place | None:
+        done = self._run("display-message", "-p", "-t", f"={name}:", LOCATION)
+        return place_of(name, done.stdout) if done.returncode == 0 else None
 
     def capture(self, pane: str) -> str | None:
         done = self._run("capture-pane", "-p", "-J", "-t", pane)

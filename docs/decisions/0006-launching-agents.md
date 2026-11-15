@@ -30,16 +30,19 @@ together, a drainer that changes, and agents that stop at a screen bellhop must 
    --wake` refuses such an agent until `launch` retries it. Other failed bindings are replaced.
 5. **The child's environment is an allowlist**, applied with `/usr/bin/env -i` so neither the
    caller's nor the tmux server's environment reaches the agent, and the tmux client never
-   follows the caller's `$TMUX`: the tmux client runs with the same allowlist (plus `TMUX_TMPDIR`
-   and `TERM`), so a server it starts holds none of the caller's session or key variables.
+   follows the caller's `$TMUX`: the tmux client gets only what tmux needs (`PATH`, `HOME`,
+   `USER`, `LOGNAME`, `SHELL`, `LANG`, `LC_*`, `TMPDIR`, `TERM`, `TMUX_TMPDIR`), so a server it
+   starts holds none of the caller's session, key or bellhop variables.
 
 ## Consequences
 
 - A drainer that cannot run tmux or read the config still fails a start at its deadline, so a
   `starting` binding cannot hold an agent forever; `launch` also starts again over a binding that
   has been `starting` for more than two minutes.
-- The tmux server a start used is recorded in `tmux_target` (`-L <name>`/`-S <path>` before
-  `<session>:<pane>`), so the drainer reads the right pane whatever the config says now; the
-  drainer re-reads the config when the file changes (B-7f).
+- The tmux server a start used is recorded in `tmux_target` as `-S <socket path> <session>:<pane>`,
+  the path tmux reports when the session opens, so the drainer reads the right pane whatever the
+  config or its own `TMUX_TMPDIR` say; the drainer re-reads the config when the file changes.
+- The first message is confirmed from the started session's transcript from its start; for Claude
+  the reader accepts it as a plain user prompt only for a message bellhop passed as the prompt.
 - A typed failure kind on the binding would replace the `detail` prefix; it needs a schema
   change and is left for later.

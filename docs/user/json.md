@@ -16,7 +16,11 @@ A successful command:
 `warnings` lists problems that did not stop the command: hooklinesinker `problems`, skipped hls
 records, unknown message ids for `status`, `cannot start the drainer: <reason>` (the command still
 succeeds), and for `send --confirm` either `not confirmed within Ns` or `cannot confirm: no
-transcript to read for this session` (returned at once).
+transcript to read for this session` (returned at once). A `send --wake` that starts or queues
+behind a start warns `--confirm does not wait for a message that starts its agent` when it was
+given `--confirm`: this is routine for a wake, and the message is confirmed later like any other
+(`bellhop status <id>`). A wake that cannot start the agent warns
+`cannot launch '<agent>': <cause>; the message waits`.
 
 A failed command:
 
@@ -79,7 +83,7 @@ States:
 | `whoami` | `session`: `session_id`, `harness`, `title`, `agent` |
 | `agents` | `agents`: `agent`, `harness`, `configured`, `binding` (`state` `starting`/`live`/`failed`, `session_id`, `cause`, `detail`) or null; every configured agent and every bound name. A failed start's `detail` starts with `start failed:` and says how to attach |
 | `bind <agent>` | `agent`: the same shape as one `agents` entry |
-| `launch <agent>` | `agent`: the same shape as one `agents` entry; `message`: the `--prompt` message, or null without one. When `launch` started the agent: with `--no-wait` the binding is `starting` and the message `pending` with route `launch`; after a wait the binding is `live` and the message `sent` (detail `started with this prompt`). When the agent was already live, the prompt is an ordinary `idle` message |
+| `launch <agent>` | `agent`: the same shape as one `agents` entry; `message`: the `--prompt` message, or null without one. When `launch` started the agent: with `--no-wait` the binding is `starting` and the message `pending` with route `launch`; after a wait the binding is `live` and the message `sent` (detail `started with this prompt`), and it becomes `confirmed` once the drainer finds it in the new session's transcript. When the agent was already live, the prompt is an ordinary `idle` message |
 | `integration show <claude\|pi>` | `integration`: `harness`, `file` (the packaged Pi extension or Claude MCP config), `install_dir` (where Pi loads extensions; null for claude, which is installed with `claude mcp add`), `lines` (the text output) |
 | `integration export <claude\|pi> --to DIR` | `integration`: `harness`, `file` (the absolute path of the copy) |
 | `doctor` | `checks`: `name`, `ok`, `detail`; `pruned`: `{"messages": n, "sockets": n}` with `--prune`, else null. When a check failed, the same two fields ride on a `doctor_failed` error |
@@ -92,18 +96,19 @@ Nothing is stored when one of these is returned (except `interrupted` and `inter
 | `code` | Exit | When |
 |---|---|---|
 | `usage` | 2 | bad arguments, an empty body, a body over 8,000 characters (on stdin too), an invalid agent name, a Codex `launch` without `--prompt` |
-| `invalid_config` | 2 | `config.toml` cannot be read or has a wrong key or value; `launch` of an agent without `command`, one whose `cwd` is not a directory, or with no tmux on `PATH` |
+| `invalid_config` | 2 | `config.toml` cannot be read or has a wrong key or value; `launch` of an agent without `command`, one whose `cwd` is not a directory, with no tmux on `PATH`, or with an environment variable name the agent cannot be given |
 | `target_not_found` | 3 | no agent or live session matches; `candidates` holds close names |
 | `target_ambiguous` | 3 | an id prefix or a title matches more than one live session; `candidates` lists them |
 | `caller_unknown` | 3 | `whoami`, `inbox` or `bind` cannot place the caller in exactly one live session |
 | `no_route` | 4 | the target is live but has no usable route (and no `--or-hold`) |
 | `hls_unavailable` | 5 | hooklinesinker is missing, gave no answer within 5 s (a first attempt of up to 4 s and a retry in the rest), failed, or speaks another protocol |
 | `invalid_environment` | 1 | a relative `XDG_*` or `BELLHOP_RUNTIME_DIR` value |
-| `runtime_dir_unsafe` | 1 | the runtime directory is not a directory owned by the caller with mode 0700 (`send` to a Claude or Pi session and `doctor`; `sessions`, and `send --or-hold`, report it as a warning and carry on with `reachable: false` or a stored `hold`; a `hold` never checks it), or a socket path is too long |
+| `runtime_dir_unsafe` | 1 | the runtime directory is not a directory owned by the caller with mode 0700 (`send` to a Claude or Pi session and `doctor`; `sessions`, and `send --or-hold`, report it as a warning and carry on with `reachable: false` or a stored `hold`; a `hold` never checks it), or a socket path is too long; `launch` of a Codex agent when the runtime directory is unusable (nothing stored, nothing started) |
 | `store_error` | 1 | the store cannot be opened, or has a newer schema than this bellhop |
 | `binding_conflict` | 1 | `bind` to a name a live process of another session holds |
 | `doctor_failed` | 1 | `doctor` found a failed check; the error also carries `checks` and `pruned` |
 | `export_failed` | 1 | `integration export` could not create or write the copy |
+| `launch_failed` | 1 | `launch` stopped before tmux opened a session: no free session name (`<agent>` to `<agent>-9` all exist), or tmux gave no answer or did not run. Nothing is stored and the binding is unchanged (`send --wake` stores the message `pending` with a warning instead) |
 | `internal_error` | 1 | an unexpected failure |
 | `interrupted` | 130 | Ctrl-C |
 
@@ -112,4 +117,4 @@ Stored, then failed (the error carries `message`):
 | `code` | Exit | When |
 |---|---|---|
 | `push_rejected` | 1 | the receiver's route answered `error` |
-| `launch_failed` | 1 | a start was attempted and failed. tmux refused the session: the message is `failed` with the same detail. The agent got its prompt but stopped at a screen, closed its pane or was not ready within 90 s (`launch` that waited): the message is `sent` with detail `outcome unknown; start failed: …`, since the agent may still act on it. `send --wake` to an agent whose last start failed: the new message is stored `failed` with that start's detail, and the error says to run `bellhop launch` |
+| `launch_failed` | 1 | a start was attempted (tmux was asked to open the session) and failed. tmux refused the session: the message is `failed` with the same detail. The agent got its prompt but stopped at a screen, closed its pane or was not ready within 90 s (`launch` that waited): the message is `sent` with detail `outcome unknown; start failed: …`, since the agent may still act on it. `send --wake` to an agent whose last start failed: the new message is stored `failed` with that start's detail, and the error says to run `bellhop launch` |

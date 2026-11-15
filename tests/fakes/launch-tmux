@@ -38,10 +38,10 @@ case "$command" in
             esac
         done
         if [ -e "$dir/new-session-hangs" ]; then sleep 30; fi
-        echo "%$count" ;;
+        echo "%$count $dir/socket" ;;
     display-message)
         [ -e "$dir/sessions/$target" ] || exit 1
-        cat "$dir/sessions/$target" ;;
+        printf '%s %s\n' "$(cat "$dir/sessions/$target")" "$dir/socket" ;;
     capture-pane)
         [ -e "$dir/pane-gone" ] && exit 1
         cat "$dir/pane.txt" 2>/dev/null ;;

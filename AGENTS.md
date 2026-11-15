@@ -6,8 +6,10 @@ This file is the canonical coding-agent guidance for bellhop.
 
 bellhop is a Python 3.13 CLI that delivers a short text into a running Claude Code, Codex or Pi
 session through that harness's own in-process route. hooklinesinker (hls) is its only source of
-live sessions and their state. `README.md` defines the public CLI contract; the accepted
-foundations are in [ADR 0001](docs/decisions/0001-foundations.md).
+live sessions and their state. `README.md` gives the CLI synopsis and `docs/user/` the public
+contract (`docs/user/json.md` for every `--json` object); the accepted foundations are in
+[ADR 0001](docs/decisions/0001-foundations.md). `skills/bellhop/SKILL.md` is the agent-facing
+skill, shipped in the wheel. `docs/handoff/` holds notes for the user to act on.
 
 ## Commands
 

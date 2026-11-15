@@ -96,9 +96,13 @@ strict = true
 [tool.hatch.build.targets.wheel]
 packages = ["src/bellhop"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"skills" = "bellhop/_skills"
+
 [tool.hatch.build.targets.sdist]
 include = [
     "src/bellhop",
+    "skills",
     "tests",
     "docs",
     "README.md",

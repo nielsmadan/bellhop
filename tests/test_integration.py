@@ -276,7 +276,7 @@ def test_the_extension_type_checks_against_pis_types(tmp_path: Path) -> None:
 
 @pytest.mark.packaging
 @pytest.mark.skipif(UV is None, reason="uv not installed")
-def test_the_wheel_carries_the_extension(tmp_path: Path) -> None:
+def test_the_wheel_carries_the_skill_and_the_integrations(tmp_path: Path) -> None:
     assert UV is not None
     result = subprocess.run(
         [UV, "build", "--wheel", "--out-dir", str(tmp_path), str(ROOT)],
@@ -295,6 +295,7 @@ def test_the_wheel_carries_the_extension(tmp_path: Path) -> None:
     names = zipfile.ZipFile(wheel).namelist()
     assert "bellhop/_integrations/pi/bellhop.ts" in names
     assert "bellhop/_integrations/claude/bellhop-mcp.json" in names
+    assert "bellhop/_skills/bellhop/SKILL.md" in names
 
 
 PARITY = """

@@ -191,3 +191,32 @@ def test_confirmation_reads_the_file_recorded_at_push_time(
 
     assert sent.transcript == recorded
     assert confirm_if_seen(conn, sent, moved, PlainTranscripts(), NOW).state == "confirmed"
+
+
+class RecordingReader(PlainTranscripts):
+    def __init__(self) -> None:
+        self.prompted: list[bool] = []
+
+    def contains(
+        self,
+        session: Session,
+        prefix: str,
+        *,
+        since: int,
+        path: Path | None = None,
+        prompted: bool = False,
+    ) -> bool:
+        self.prompted.append(prompted)
+        return False
+
+
+@pytest.mark.parametrize(("route", "prompted"), [("launch", True), ("fake", False)])
+def test_only_a_start_prompt_is_looked_for_as_a_prompt(
+    conn: sqlite3.Connection, route: str, prompted: bool
+) -> None:
+    message = make_message(1, state="sent", route=route, transcript_offset=0)
+    reader = RecordingReader()
+
+    confirm_if_seen(conn, message, make_session("s1"), reader, NOW)
+
+    assert reader.prompted == [prompted]
