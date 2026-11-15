@@ -42,7 +42,12 @@ receiver's own transcript (Claude `projects/*.jsonl`, Codex `sessions/**/rollout
 | S10 | `/clear` (Claude) or `/new` (Codex, Pi) in the same process, then a push resolved the way bellhop resolves (Claude/Pi: the process's socket; Codex: the session hls reports for the work dir) | token lands in the new session's transcript |
 
 Timing: `mid-turn` when the token entry precedes the running turn's final answer, `boundary` when it
-follows it.
+follows it. A turn whose final answer never arrives also counts as `mid-turn`; on every Codex and Pi
+S2-interrupt row that is what happened (the push displaced the turn's own answer), and for those
+rows the mid-turn landing was confirmed by reading a transcript (`pi-ext-r2-a`; rollout
+`01a1d71f…`: prompt 22:56:51, steer 22:56:58, then the ACK and no `DONE`). `busy_at_push` is false
+on all six Pi S2 rows because the spike's busy pattern does not match Pi's screen, not because the
+turn had ended.
 
 ## Candidates
 
@@ -84,8 +89,12 @@ The Claude and Pi endpoints speak the wire in the plan's *Endpoint sockets* sect
   `queued_command`. `priority: "later"` waits for the turn to end and arrives as an ordinary user
   entry.
 - Codex S3b is **not measured**, not `n/a`: asked to use `request_user_input`, Codex 0.167.1 in its
-  default mode opened no question dialog, and whether another mode (such as plan mode) shows one was
-  not checked. Pi has no permission prompts (S3) and no question dialog (S3b), so those are `n/a`.
+  default mode opened no question dialog, and plan or collaboration mode, where Codex exposes that
+  tool, was not tried. A cell that was not measured is not a pass, so no Codex candidate clears the
+  S3b gate and Codex `now` is degraded to `idle` until Task B5 measures it (ADR 0002). Pi has no
+  permission prompts (S3) and no question dialog (S3b), so those are `n/a`.
+- On S2-interrupt the interrupted turn never produced its final answer on Codex (6 of 6) or Pi
+  (3 of 3); Claude finished every interrupted turn (12 of 12).
 - Codex S10 fails on every route; see Known limits.
 
 ## Answers to the plan's questions
@@ -95,7 +104,10 @@ The Claude and Pi endpoints speak the wire in the plan's *Endpoint sockets* sect
 - (a) **MCP relay.** The stdio MCP child receives `CLAUDE_CODE_MESSAGING_SOCKET` and
   `CLAUDE_CODE_MESSAGING_TOKEN` in its environment, and a frame it writes there is delivered with
   no hold. With `priority: "next"` it lands mid-turn (S2-interrupt 3/3 mid-turn); with
-  `priority: "later"` it waits for the turn boundary (S2-boundary 3/3 boundary).
+  `priority: "later"` it waits for the turn boundary (S2-boundary 3/3 boundary). Not measured: the
+  spike gave every relay a fixed socket name, so the planned `<runtime_dir>/claude-<pid>.sock`
+  naming, and whether the relay's parent is the Claude pid hls reports under the user's launch
+  wrapper, are left to Task B6.
 - (b) **The same relay started elsewhere.** Spawned by a mod through `$.process.spawn`, the child
   also gets both variables (`$.process.spawn` passes the host environment). Started by a
   `SessionStart` command hook, the child gets both too, and the hook must detach it; the detached
@@ -129,6 +141,11 @@ The Claude and Pi endpoints speak the wire in the plan's *Endpoint sockets* sect
 - The daemon's socket is `/private/tmp/codex-daemon-<uid>/<sha256 of $CODEX_HOME/app-server-control/app-server-control.sock>`,
   and `$CODEX_HOME/app-server-control/app-server-control.sock` is a link to it
   (`codex app-server daemon version` prints it as `socketPath`).
+- A per-session server started with `codex app-server --listen unix://<path>` does the same: its
+  real socket is `/private/tmp/codex-daemon-<uid>/<sha256 of the resolved <path>>`, and `<path>` is
+  only a link to it. The runtime directory's 0700 check therefore does not cover where the socket
+  lives, and cleanup must follow the link. Three such sockets from the measurement run were left in
+  that directory and removed afterwards by matching exactly those hashes.
 
 ### 3. Pi
 

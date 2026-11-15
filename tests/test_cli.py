@@ -1,9 +1,12 @@
 import json
+from functools import partial
 from importlib.metadata import version
 
 import pytest
 
 from bellhop.cli import main
+from bellhop.cli.parsing import json_requested
+from bellhop.hls import list_sessions
 from conftest import FakeHls
 
 
@@ -166,7 +169,7 @@ def test_sessions_succeeds_when_the_retry_follows_a_timeout(
 ) -> None:
     fake_hls.respond([FakeHls.record("pi", "p1")])
     fake_hls.slow_first_call()
-    monkeypatch.setattr("bellhop.hls.TIMEOUT_SECONDS", 0.5)
+    monkeypatch.setattr("bellhop.cli.context.list_sessions", partial(list_sessions, budget=1.0))
 
     assert main(["sessions", "--json"]) == 0
 
@@ -203,7 +206,7 @@ def test_interrupt_exits_130(
     def interrupted(_env: object) -> None:
         raise KeyboardInterrupt
 
-    monkeypatch.setattr("bellhop.cli.dispatch.list_sessions", interrupted)
+    monkeypatch.setattr("bellhop.cli.context.list_sessions", interrupted)
 
     assert main(["sessions"]) == 130
     assert capsys.readouterr().err == "bellhop: interrupted\n"
@@ -215,7 +218,7 @@ def test_broken_pipe_exits_quietly(
     def broken(_env: object) -> None:
         raise BrokenPipeError
 
-    monkeypatch.setattr("bellhop.cli.dispatch.list_sessions", broken)
+    monkeypatch.setattr("bellhop.cli.context.list_sessions", broken)
 
     assert main(["sessions"]) == 1
     assert capsys.readouterr().err == ""
@@ -227,7 +230,7 @@ def test_unexpected_failure_with_json_prints_the_internal_error_envelope(
     def failing(_env: object) -> None:
         raise RuntimeError("store exploded")
 
-    monkeypatch.setattr("bellhop.cli.dispatch.list_sessions", failing)
+    monkeypatch.setattr("bellhop.cli.context.list_sessions", failing)
 
     assert main(["sessions", "--json"]) == 1
 
@@ -246,3 +249,28 @@ def test_subcommand_option_prefixes_are_not_expanded(
 
     assert main(["sessions", "--js"]) == 2
     assert capsys.readouterr().err.startswith("bellhop: unrecognized arguments: --js")
+
+
+def test_interrupt_with_json_prints_the_interrupted_envelope(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def interrupted(_env: object) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("bellhop.cli.context.list_sessions", interrupted)
+
+    assert main(["sessions", "--json"]) == 130
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert json.loads(captured.out) == {
+        "schema_version": 1,
+        "status": "error",
+        "exit_code": 130,
+        "error": {"code": "interrupted", "message": "interrupted"},
+    }
+
+
+def test_json_after_the_end_of_options_is_text_not_a_flag() -> None:
+    assert json_requested(["send", "x", "--", "--json"]) is False
+    assert json_requested(["send", "x", "--json", "--", "y"]) is True

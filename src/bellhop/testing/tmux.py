@@ -28,6 +28,20 @@ class TmuxError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class PaneState:
+    session: str
+    dead: bool
+    pid: int
+
+
+def parse_pane(line: str) -> PaneState | None:
+    parts = line.split()
+    if len(parts) != len(PaneState.__dataclass_fields__) or not parts[2].isdigit():
+        return None
+    return PaneState(parts[0], parts[1] != "0", int(parts[2]))
+
+
+@dataclass(frozen=True)
 class SmokeTmux:
     socket: str
     conf: Path
@@ -88,9 +102,21 @@ class SmokeTmux:
         )
         return result.returncode == 0 and result.stdout.strip() == "0"
 
-    def pane_pids(self) -> set[int]:
-        listed = self.run("list-panes", "-a", "-F", "#{pane_pid}", check=False).split()
-        return {int(pid) for pid in listed if pid.isdigit()}
+    def panes(self) -> list[PaneState]:
+        listed = self.run(
+            "list-panes", "-a", "-F", "#{session_name} #{pane_dead} #{pane_pid}", check=False
+        )
+        return [state for state in map(parse_pane, listed.splitlines()) if state is not None]
+
+    def server_alive(self) -> bool:
+        result = subprocess.run(
+            self.argv("list-sessions"),
+            capture_output=True,
+            timeout=TIMEOUT_SECONDS,
+            env=dict(self.env),
+            check=False,
+        )
+        return result.returncode == 0
 
     def capture(self, name: str) -> str:
         return self.run("capture-pane", "-p", "-J", "-t", self.target(name))

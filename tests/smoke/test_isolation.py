@@ -73,8 +73,7 @@ def test_isolated_claude_codex_and_pi_start_appear_and_tear_down_cleanly() -> No
         user_home=REAL_HOME,
     )
     assert run.socket == SMOKE_SOCKET == "bellhop-smoke"
-    run.start()
-    try:
+    with run:
         for agent in ("claude", "codex", "pi"):
             run.launch(agent, f"iso-{agent}", prompt=PROMPT)
         for agent in ("claude", "codex", "pi"):
@@ -86,9 +85,8 @@ def test_isolated_claude_codex_and_pi_start_appear_and_tear_down_cleanly() -> No
             listed = _listed(run.env, run.layout.root)
         assert sorted(str(s["harness"]) for s in listed) == ["claude", "codex", "pi"]
         assert _real_sessions_under(run.layout.root) == []
-    finally:
-        leftovers = run.teardown()
-    assert leftovers == []
-    assert run.socket not in run.tmux_server_sockets()
+    assert run.leftovers == []
+    assert run.tmux.server_alive() is False
+    assert not run.layout.runtime_dir.exists()
     assert _real_sessions_under(run.layout.root) == []
     assert _real_consumers() == consumers_before

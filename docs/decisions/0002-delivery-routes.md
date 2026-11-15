@@ -13,8 +13,8 @@ composer) and S10 (`/clear` or `/new` in the same process), three repetitions ea
 2.1.325, Codex 0.167.1 and Pi 1.5.2 with hooklinesinker 1.5.1. The table, the method and the
 answers to the plan's questions 1–5 are in [routes.md](../reference/routes.md).
 
-The rules applied: a cell passes at 3/3, and `n/a` counts as a pass. A candidate that fails S3 or
-S3b is out. The `idle` route is the candidate passing the most of S1, S7 and S10, ties broken by
+The rules applied: a cell passes at 3/3, and `n/a` counts as a pass; a cell that was not measured
+is not a pass. A candidate that fails S3 or S3b is out. The `idle` route is the candidate passing the most of S1, S7 and S10, ties broken by
 the least user configuration and, for Claude, then by the MCP relay. `now` takes the best candidate
 that passes S2 mid-turn, else degrades to `idle`.
 
@@ -23,7 +23,7 @@ that passes S2 mid-turn, else degrades to `idle`.
 | Harness | `idle` route | `now` route | Route name |
 |---|---|---|---|
 | Claude | MCP relay, frame `priority: "later"` | the same relay, frame `priority: "next"` | `claude-relay` |
-| Codex | the app server the session is attached to: wait until the thread is idle, then `turn/start` | the same app server: `turn/steer` into the running turn (`turn/start` when idle) | `codex-app-server` |
+| Codex | the app server the session is attached to: wait until the thread is idle, then `turn/start` | degraded to `idle` (`degraded_from: "now"`) until S3b is measured | `codex-app-server` |
 | Pi | extension, `sendUserMessage(text, { deliverAs: "followUp" })` | the same extension, `deliverAs: "steer"` | `pi-extension` |
 
 - **Claude.** No candidate failed S3 or S3b. The MCP relay, the hook-started relay and the
@@ -32,10 +32,11 @@ that passes S2 mid-turn, else degrades to `idle`.
   enabled plugin), so the tie goes to the MCP relay. That also avoids two costs the others carry:
   a hook-started relay has to detach and outlives its session unless it watches the Claude pid, and
   `$.prompt.submit` can never interrupt. `now` uses the same relay: `priority: "next"` landed
-  mid-turn 3/3. The relay listens on `<runtime_dir>/claude-<pid>.sock`, where `<pid>` is its parent,
-  the Claude process hls reports, and it reads `CLAUDE_CODE_MESSAGING_SOCKET` and
-  `CLAUDE_CODE_MESSAGING_TOKEN` from its own environment. It never imitates another session and
-  never needs `crossSessionInbound`.
+  mid-turn 3/3. The relay reads `CLAUDE_CODE_MESSAGING_SOCKET` and `CLAUDE_CODE_MESSAGING_TOKEN`
+  from its own environment; it never imitates another session and never needs
+  `crossSessionInbound`. It is meant to listen on `<runtime_dir>/claude-<pid>.sock` with `<pid>` the
+  Claude process hls reports; the spike used fixed socket names, so that naming, and whether the
+  relay's parent is that pid under the user's launch wrapper, is an assumption Task B6 measures.
 - **Codex.** No candidate failed S3. S3b could not be measured: Codex opened no question dialog
   in its default mode (see Consequences). `turn/start` on the shared daemon, `codex queue` on the
   shared daemon, and `turn/start` on a per-session server each passed S1 and S7 3/3 and failed S10
@@ -44,7 +45,9 @@ that passes S2 mid-turn, else degrades to `idle`.
   mechanism as `turn/start` on the daemon, JSON-RPC to the app server the TUI is attached to, so one
   route covers both, as ADR 0001 requires: the daemon's socket when the session is attached to it,
   a per-session server for sessions bellhop launches. `codex queue` is not used: it needs the daemon
-  and has no interrupt. `turn/steer` on the same connection passed S2 mid-turn 3/3, so it is `now`.
+  and has no interrupt. `turn/steer` on the same connection passed S2 mid-turn 3/3, but with S3b
+  not measured no Codex candidate passes the gate, so Codex `now` is degraded to `idle`
+  (`degraded_from: "now"`) until Task B5 measures S3b in a mode where Codex shows a question dialog.
   The route does not queue to the boundary itself; bellhop's drainer waits until the thread is idle.
   A stand-alone Codex session stays `hold`-only.
 - **Pi.** S3 and S3b are `n/a`; the extension passed S1, S7 and S10 3/3, `followUp` waited for the
@@ -54,10 +57,12 @@ that passes S2 mid-turn, else degrades to `idle`.
 
 Known limits, each measured, with what bellhop does about it:
 
-- **Codex S3b is unmeasured.** The decision rule that drops a candidate failing S3b was never
-  exercised for `turn/start` or `turn/steer`. Before Task B5 enables `now` for Codex, it re-measures
-  S3b in a mode that shows a question dialog; until then a `now` push to a Codex session whose hls
-  phase is `permission` is held back like an `idle` one.
+- **Codex S3b is not measured.** In its default mode Codex opened no question dialog, and plan or
+  collaboration mode was not tried. Codex `now` is therefore degraded to `idle` until Task B5
+  measures S3b; only then can `turn/steer` become Codex's `now` route.
+- **A Codex or Pi `now` push displaces the running turn's own answer.** In S2-interrupt the
+  interrupted turn never produced its final answer on Codex (6 of 6) or Pi (3 of 3); Claude
+  finished every interrupted turn (12 of 12).
 
 - **Pi is invisible to hooklinesinker 1.5.1 when launched the usual way.** Pi runs as `node` and
   retitles its process `pi`, so hls records no process and leaves the session out of
@@ -69,7 +74,10 @@ Known limits, each measured, with what bellhop does about it:
   confirmed from the receiver's transcript, so such a push stays `sent` and never reaches
   `confirmed`, which `bellhop status` shows.
 - **Codex app-server sessions have no pid or pane of their own in hls.** hls reports the server's
-  pid (shared by every TUI on the daemon) and no tmux pane. Bindings for these sessions are keyed by
+  pid (shared by every TUI on the daemon) and no tmux pane. A per-session server's real socket is
+  not at the `--listen` path either: Codex creates it in `/private/tmp/codex-daemon-<uid>/` named by
+  the sha256 of that path and links the path to it, so cleanup must follow the link. Bindings for
+  these sessions are keyed by
   thread id and app-server socket, as the plan's store section already says, and `whoami` uses
   `CODEX_THREAD_ID` rather than the process tree.
 - **The shared Codex daemon updates and restarts itself.** Five to seven minutes after it started,

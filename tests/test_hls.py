@@ -1,6 +1,9 @@
 import os
+import subprocess
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import NoReturn
 
 import pytest
 
@@ -132,7 +135,7 @@ def test_retries_once_after_a_timeout(fake_hls: FakeHls) -> None:
     fake_hls.respond([FakeHls.record("pi", "p1")])
     fake_hls.slow_first_call()
 
-    result = list_sessions(os.environ, timeout=0.5)
+    result = list_sessions(os.environ, budget=1.0)
 
     assert [s.session_id for s in result.sessions] == ["p1"]
     assert fake_hls.calls() == ["sessions --json", "sessions --json"]
@@ -141,9 +144,25 @@ def test_retries_once_after_a_timeout(fake_hls: FakeHls) -> None:
 def test_two_timeouts_are_unavailable(fake_hls: FakeHls) -> None:
     fake_hls.always_slow()
 
-    with pytest.raises(HlsUnavailable, match="timed out twice"):
-        list_sessions(os.environ, timeout=0.2)
+    with pytest.raises(HlsUnavailable, match=r"no answer within 0\.4s"):
+        list_sessions(os.environ, budget=0.4)
     assert len(fake_hls.calls()) == 2
+
+
+def test_the_attempt_and_its_retry_share_one_budget() -> None:
+    clock = [0.0]
+    given: list[float] = []
+
+    def slow(argv: Sequence[str], env: Mapping[str, str], timeout: float) -> NoReturn:
+        given.append(timeout)
+        clock[0] += timeout
+        raise subprocess.TimeoutExpired(list(argv), timeout)
+
+    with pytest.raises(HlsUnavailable):
+        list_sessions({"BELLHOP_HOOKLINESINKER": "/bin/hls"}, run=slow, clock=lambda: clock[0])
+
+    assert given == [2.5, 2.5]
+    assert clock[0] == 5.0
 
 
 def test_nonzero_exit_is_unavailable(fake_hls: FakeHls) -> None:
@@ -218,3 +237,26 @@ def test_undecodable_bytes_are_replaced(fake_hls: FakeHls) -> None:
     [session] = list_sessions(os.environ).sessions
 
     assert session.title == "title-�p1"
+
+
+def test_records_sharing_a_session_id_collapse_to_the_latest(fake_hls: FakeHls) -> None:
+    fake_hls.respond(
+        [
+            FakeHls.record("codex", "x1", bindingId="old", observedAt="2026-11-13T09:00:00Z"),
+            FakeHls.record("claude", "c1"),
+            FakeHls.record("codex", "x1", bindingId="new", observedAt="2026-11-13T09:05:00Z"),
+            FakeHls.record("codex", "x1", bindingId="older", observedAt="2026-11-13T08:00:00Z"),
+        ]
+    )
+
+    sessions = list_sessions(os.environ).sessions
+
+    assert [(s.session_id, s.binding_id) for s in sessions] == [("c1", "binding-c1"), ("x1", "new")]
+
+
+def test_a_problem_without_a_message_is_shown_as_json(fake_hls: FakeHls) -> None:
+    fake_hls.respond([], problems=[{"observedAt": "2026-11-13T09:00:00Z", "code": 7}])
+
+    assert list_sessions(os.environ).warnings == (
+        '{"observedAt": "2026-11-13T09:00:00Z", "code": 7}',
+    )

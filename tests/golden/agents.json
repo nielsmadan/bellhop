@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "status": "ok",
+  "warnings": [],
+  "agents": [
+    {
+      "agent": "enki",
+      "harness": "claude",
+      "configured": true,
+      "binding": {
+        "state": "live",
+        "session_id": "2e2042a9-937c-4e03-ba25-74b5ba14a58f",
+        "cause": "bind",
+        "detail": null
+      }
+    },
+    {
+      "agent": "nanna",
+      "harness": "codex",
+      "configured": true,
+      "binding": null
+    },
+    {
+      "agent": "scribe",
+      "harness": "claude",
+      "configured": false,
+      "binding": {
+        "state": "live",
+        "session_id": "2e2042a9-937c-4e03-ba25-74b5ba14a58f",
+        "cause": "bind",
+        "detail": null
+      }
+    }
+  ]
+}

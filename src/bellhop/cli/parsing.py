@@ -5,6 +5,7 @@ from typing import NoReturn
 
 from bellhop.codes import USAGE
 from bellhop.errors import BellhopError
+from bellhop.models import URGENCIES
 
 MISSING_COMMAND = "missing command; see 'bellhop --help'"
 
@@ -26,11 +27,57 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--version", action="store_true", help="print the version and exit")
     commands = parser.add_subparsers(dest="command", metavar="COMMAND", parser_class=_Parser)
-    sessions = commands.add_parser(
-        "sessions", help="list live Claude, Codex and Pi sessions", allow_abbrev=False
+    send = _command(commands, "send", "deliver a message to an agent or a session")
+    send.add_argument("target", help="agent name, session id, id prefix (4+) or title")
+    send.add_argument("text", nargs="?", help="the message; read from stdin when omitted")
+    send.add_argument(
+        "--urgency",
+        choices=tuple(URGENCIES),
+        default="idle",
+        help="now: interrupt; idle: wait until the session is idle (default); hold: keep for inbox",
     )
-    sessions.add_argument("--json", action="store_true", help="print one JSON object")
+    send.add_argument(
+        "--wake", action="store_true", help="start a stopped agent (not available yet; exits 4)"
+    )
+    send.add_argument(
+        "--or-hold", action="store_true", help="store as hold when the target has no route"
+    )
+    send.add_argument("--from", dest="sender", metavar="NAME", help="the sender's name")
+    send.add_argument("--key", help="idempotency key; a repeated key pushes nothing")
+    send.add_argument(
+        "--confirm", type=_seconds, metavar="SECONDS", help="wait for the receiver's transcript"
+    )
+    status = _command(commands, "status", "show stored messages")
+    status.add_argument("ids", nargs="+", metavar="MESSAGE_ID", help="ids that send printed")
+    inbox = _command(commands, "inbox", "read hold messages for this session and its agent")
+    inbox.add_argument("--target", help="read another target's hold messages")
+    inbox.add_argument("--peek", action="store_true", help="leave the messages unread")
+    _command(commands, "sessions", "list live Claude, Codex and Pi sessions")
+    _command(commands, "whoami", "show the session this command runs in")
+    _command(commands, "agents", "list configured and bound agents")
+    bind = _command(commands, "bind", "bind this session to an agent name")
+    bind.add_argument("agent", help="lowercase letters, digits, '_' and '-'")
+    doctor = _command(commands, "doctor", "check hls, directories, store and sockets")
+    doctor.add_argument("--prune", action="store_true", help="delete old messages and dead sockets")
     return parser
+
+
+def _command(
+    commands: "argparse._SubParsersAction[_Parser]", name: str, summary: str
+) -> argparse.ArgumentParser:
+    command = commands.add_parser(name, help=summary, description=summary, allow_abbrev=False)
+    command.add_argument("--json", action="store_true", help="print one JSON object")
+    return command
+
+
+def _seconds(text: str) -> float:
+    try:
+        value = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"'{text}' is not a number of seconds") from None
+    if value < 0:
+        raise argparse.ArgumentTypeError(f"'{text}' is negative")
+    return value
 
 
 def parse(argv: Sequence[str]) -> argparse.Namespace:
@@ -38,4 +85,5 @@ def parse(argv: Sequence[str]) -> argparse.Namespace:
 
 
 def json_requested(argv: Sequence[str]) -> bool:
-    return "--json" in argv
+    options = argv[: argv.index("--")] if "--" in argv else argv
+    return "--json" in options

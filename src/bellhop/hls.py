@@ -2,6 +2,7 @@ import json
 import os
 import shutil
 import subprocess
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -12,12 +13,13 @@ from bellhop.models import HARNESSES, PHASES, Harness, Session
 from bellhop.paths import data_home
 
 PROTOCOL = 1
-TIMEOUT_SECONDS = 5.0
+BUDGET_SECONDS = 5.0
 ATTEMPTS = 2
 OVERRIDE = "BELLHOP_HOOKLINESINKER"
 NOT_FOUND = f"hooklinesinker not found; install it or set {OVERRIDE}"
 
 type Runner = Callable[[Sequence[str], Mapping[str, str], float], subprocess.CompletedProcess[str]]
+type Clock = Callable[[], float]
 
 
 @dataclass(frozen=True)
@@ -58,24 +60,42 @@ def find_binary(env: Mapping[str, str]) -> Path:
     return Path(found)
 
 
+def attempt_timeout(attempt: int, budget: float, remaining: float) -> float:
+    return remaining if attempt == ATTEMPTS - 1 else min(remaining, budget / ATTEMPTS)
+
+
 def _invoke(
-    binary: Path, env: Mapping[str, str], timeout: float, run: Runner
+    binary: Path, env: Mapping[str, str], budget: float, run: Runner, clock: Clock
 ) -> subprocess.CompletedProcess[str]:
-    for _ in range(ATTEMPTS):
+    deadline = clock() + budget
+    for attempt in range(ATTEMPTS):
+        remaining = deadline - clock()
+        if remaining <= 0:
+            break
         try:
-            return run([str(binary), "sessions", "--json"], env, timeout)
+            return run(
+                [str(binary), "sessions", "--json"],
+                env,
+                attempt_timeout(attempt, budget, remaining),
+            )
         except subprocess.TimeoutExpired:
             continue
         except OSError as error:
             raise HlsUnavailable(f"cannot run {binary}: {error.strerror or error}") from error
-    raise HlsUnavailable(f"hooklinesinker sessions --json timed out twice after {timeout:g}s")
+    raise HlsUnavailable(
+        f"hooklinesinker sessions --json gave no answer within {budget:g}s ({ATTEMPTS} attempts)"
+    )
 
 
 def list_sessions(
-    env: Mapping[str, str], *, timeout: float | None = None, run: Runner = _run
+    env: Mapping[str, str],
+    *,
+    budget: float = BUDGET_SECONDS,
+    run: Runner = _run,
+    clock: Clock = time.monotonic,
 ) -> SessionList:
     binary = find_binary(env)
-    result = _invoke(binary, env, TIMEOUT_SECONDS if timeout is None else timeout, run)
+    result = _invoke(binary, env, budget, run, clock)
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip() or "no output"
         raise HlsUnavailable(f"hooklinesinker sessions --json exited {result.returncode}: {detail}")
@@ -95,7 +115,7 @@ def _load(text: str) -> dict[str, object]:
 def _problem_text(problem: object) -> str:
     if isinstance(problem, dict) and "message" in problem:
         return str(problem["message"])
-    return str(problem)
+    return problem if isinstance(problem, str) else json.dumps(problem, ensure_ascii=False)
 
 
 def _speaks_protocol(value: object) -> bool:
@@ -115,12 +135,21 @@ def parse_sessions(text: str) -> SessionList:
         raise HlsUnavailable("hooklinesinker sessions --json lacks a sessions or problems list")
     outcomes = [_record(raw) for raw in records]
     return SessionList(
-        sessions=tuple(outcome for outcome in outcomes if isinstance(outcome, Session)),
+        sessions=collapse([outcome for outcome in outcomes if isinstance(outcome, Session)]),
         warnings=(
             *(_problem_text(problem) for problem in problems),
             *(outcome for outcome in outcomes if isinstance(outcome, str)),
         ),
     )
+
+
+def collapse(sessions: Sequence[Session]) -> tuple[Session, ...]:
+    latest: dict[str, Session] = {}
+    for session in sessions:
+        kept = latest.get(session.session_id)
+        if kept is None or session.observed_at >= kept.observed_at:
+            latest[session.session_id] = session
+    return tuple(session for session in sessions if latest[session.session_id] is session)
 
 
 def _excerpt(raw: object) -> str:

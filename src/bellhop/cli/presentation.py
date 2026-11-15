@@ -7,13 +7,25 @@ from bellhop.models import Session
 
 SHORT_ID = 8
 
-_CONTROL_ESCAPES = {
-    code: f"\\x{code:02x}" for code in (*range(0x20), *range(0x7F, 0xA0)) if code != ord("\t")
-} | {ord("\n"): "\\n", ord("\r"): "\\r"}
+_FORMAT_CONTROLS = (*range(0x202A, 0x202F), *range(0x2066, 0x206A), 0x2028, 0x2029)
+_TEXT_ESCAPES = (
+    {
+        code: f"\\x{code:02x}"
+        for code in (*range(0x20), *range(0x7F, 0xA0))
+        if code not in (ord("\t"), ord("\n"))
+    }
+    | {ord("\r"): "\\r"}
+    | {code: f"\\u{code:04x}" for code in _FORMAT_CONTROLS}
+)
+_CONTROL_ESCAPES = _TEXT_ESCAPES | {ord("\n"): "\\n"}
 
 
 def escape_controls(text: str) -> str:
     return text.translate(_CONTROL_ESCAPES)
+
+
+def escape_text(text: str) -> str:
+    return text.translate(_TEXT_ESCAPES)
 
 
 def _row(session: Session) -> tuple[str, str, str, str]:
@@ -44,6 +56,11 @@ def print_lines(lines: Sequence[str]) -> None:
 
 def print_diagnostic(message: str) -> None:
     print(f"bellhop: {escape_controls(message)}", file=sys.stderr)
+
+
+def print_warnings(warnings: Sequence[str]) -> None:
+    for warning in warnings:
+        print_diagnostic(f"warning: {warning}")
 
 
 def silence_stdout() -> None:

@@ -6,6 +6,7 @@ from bellhop.cli.dispatch import run
 from bellhop.cli.parsing import bellhop_version, json_requested, parse
 from bellhop.cli.presentation import print_diagnostic, print_json, silence_stdout
 from bellhop.codes import INTERNAL_ERROR, INTERRUPTED
+from bellhop.drain import main as drain_main
 from bellhop.errors import BellhopError
 from bellhop.jsonout import error_payload
 
@@ -38,6 +39,9 @@ def _main(argv: Sequence[str]) -> int:
 
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
+    os.umask(0o077)
+    if arguments == ["_drain"]:
+        return drain_main(os.environ)
     try:
         exit_code = _main(arguments)
         sys.stdout.flush()

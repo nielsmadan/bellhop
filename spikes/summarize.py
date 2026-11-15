@@ -8,6 +8,8 @@ ORDER = ("S1", "S2-boundary", "S2-interrupt", "S3", "S3b", "S7", "S10")
 
 def cell(rows: list[dict]) -> str:
     counted = [r for r in rows if r["pass"] is not None]
+    if not counted and all(r.get("not_measured") for r in rows):
+        return "not measured"
     if not counted:
         reasons = {r.get("na") or r.get("error") or "n/a" for r in rows}
         return "n/a" if all(r.get("na") for r in rows) else "error: " + "; ".join(sorted(reasons))

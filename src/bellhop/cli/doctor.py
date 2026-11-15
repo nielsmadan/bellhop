@@ -1,0 +1,163 @@
+import argparse
+import errno
+import os
+import socket
+import stat
+from dataclasses import dataclass
+from datetime import timedelta
+from pathlib import Path
+
+from bellhop.cli.context import Context
+from bellhop.cli.presentation import escape_controls, print_json, print_lines, print_warnings
+from bellhop.codes import DOCTOR_FAILED
+from bellhop.drain import drainer_running
+from bellhop.errors import BellhopError
+from bellhop.jsonout import check_object, ok_payload
+from bellhop.paths import state_dir
+from bellhop.runtime import PRIVATE_MODE, resolve_runtime_dir
+from bellhop.store import SCHEMA_VERSION, orphaned, prune, schema_version
+
+PRUNE_AGE = timedelta(days=30)
+REFUSED = frozenset({errno.ECONNREFUSED, errno.ENOENT})
+
+
+@dataclass(frozen=True)
+class Check:
+    name: str
+    ok: bool
+    detail: str
+
+
+def _dir_check(name: str, path: Path) -> Check:
+    try:
+        info = path.lstat()
+    except OSError as error:
+        return Check(name, False, f"{path}: {error.strerror or error}")
+    if not stat.S_ISDIR(info.st_mode):
+        return Check(name, False, f"{path}: not a directory")
+    if info.st_uid != os.getuid():
+        return Check(name, False, f"{path}: owned by uid {info.st_uid}")
+    mode = stat.S_IMODE(info.st_mode)
+    if mode != PRIVATE_MODE:
+        return Check(name, False, f"{path}: mode {mode:04o}; it must be 0700")
+    if not os.access(path, os.W_OK | os.X_OK):
+        return Check(name, False, f"{path}: not writable by this process")
+    return Check(name, True, str(path))
+
+
+def socket_inode(path: Path) -> int | None:
+    try:
+        info = path.lstat()
+    except OSError:
+        return None
+    return info.st_ino if stat.S_ISSOCK(info.st_mode) else None
+
+
+def refuses(path: Path) -> bool:
+    probe = socket.socket(socket.AF_UNIX)
+    probe.settimeout(1.0)
+    try:
+        probe.connect(str(path))
+    except OSError as error:
+        return error.errno in REFUSED
+    finally:
+        probe.close()
+    return False
+
+
+def dead_sockets(runtime: Path) -> dict[Path, int]:
+    try:
+        candidates = sorted(runtime.glob("*.sock"))
+    except OSError:
+        return {}
+    inodes = {path: socket_inode(path) for path in candidates}
+    return {path: ino for path, ino in inodes.items() if ino is not None and refuses(path)}
+
+
+def remove_if_unchanged(path: Path, inode: int) -> bool:
+    if socket_inode(path) != inode:
+        return False
+    path.unlink(missing_ok=True)
+    return True
+
+
+def _hls(ctx: Context) -> Check:
+    try:
+        count = len(ctx.sessions.sessions)
+    except BellhopError as error:
+        return Check("hooklinesinker", False, str(error))
+    return Check("hooklinesinker", True, f"{count} live sessions")
+
+
+def _runtime(ctx: Context) -> tuple[Check, Path | None]:
+    try:
+        path = resolve_runtime_dir(ctx.env, ctx.config)
+    except BellhopError as error:
+        return Check("runtime directory", False, str(error)), None
+    return _dir_check("runtime directory", path), path
+
+
+def _store(ctx: Context) -> Check:
+    try:
+        version = schema_version(ctx.conn)
+    except BellhopError as error:
+        return Check("store", False, str(error))
+    return Check("store", True, f"schema version {version} of {SCHEMA_VERSION}")
+
+
+def _work(ctx: Context) -> Check:
+    waiting = orphaned(ctx.conn)
+    if waiting and not drainer_running(ctx.env):
+        started = ctx.starter(ctx.env)
+        note = "; started the drainer" if started else ""
+        return Check("pending work", False, f"{waiting} messages wait and no drainer runs{note}")
+    return Check("pending work", True, f"{waiting} messages wait for the drainer")
+
+
+def run_checks(ctx: Context) -> tuple[list[Check], Path | None]:
+    hls = _hls(ctx)
+    store = _store(ctx)
+    state = _dir_check("state directory", state_dir(ctx.env))
+    runtime, runtime_path = _runtime(ctx)
+    checks = [hls, state, runtime, store]
+    if store.ok:
+        checks.append(_work(ctx))
+    if runtime_path is not None and runtime.ok:
+        dead = dead_sockets(runtime_path)
+        names = ", ".join(path.name for path in dead)
+        checks.append(Check("sockets", not dead, f"dead: {names}" if dead else "none dead"))
+    return checks, runtime_path
+
+
+def prune_all(ctx: Context, runtime: Path | None) -> dict[str, int]:
+    removed = prune(ctx.conn, ctx.now() - PRUNE_AGE)
+    dead = dead_sockets(runtime) if runtime is not None else {}
+    unlinked = [path for path, inode in dead.items() if remove_if_unchanged(path, inode)]
+    return {"messages": removed, "sockets": len(unlinked)}
+
+
+def check_line(check: Check) -> str:
+    return f"{'ok  ' if check.ok else 'FAIL'} {check.name}: {escape_controls(check.detail)}"
+
+
+def doctor(args: argparse.Namespace, ctx: Context) -> int:
+    checks, runtime = run_checks(ctx)
+    store_ok = any(check.name == "store" and check.ok for check in checks)
+    pruned = prune_all(ctx, runtime) if args.prune and store_ok else None
+    failed = [check.name for check in checks if not check.ok]
+    fields = {"checks": [check_object(c.name, c.ok, c.detail) for c in checks], "pruned": pruned}
+    if not args.json:
+        print_warnings(ctx.warnings)
+        lines = [check_line(check) for check in checks]
+        if pruned is not None:
+            lines.append(f"pruned {pruned['messages']} messages and {pruned['sockets']} sockets")
+        print_lines(lines)
+    if failed:
+        raise BellhopError(
+            f"{len(failed)} doctor checks failed: {', '.join(failed)}",
+            code=DOCTOR_FAILED,
+            fields=fields,
+        )
+    if args.json:
+        print_json(ok_payload(ctx.warnings, fields))
+    return 0

@@ -9,10 +9,13 @@ PACKAGE_ROOT = SOURCE_ROOT / "bellhop"
 PACKAGE = "bellhop"
 
 LAYERS: tuple[tuple[str, ...], ...] = (
-    ("__init__", "codes"),
-    ("errors", "models"),
-    ("paths", "jsonout"),
-    ("hls",),
+    ("__init__", "codes", "models"),
+    ("errors",),
+    ("paths", "jsonout", "store", "envelope", "transcripts", "routes"),
+    ("config", "identity", "hls"),
+    ("runtime", "targets"),
+    ("delivery",),
+    ("drain",),
     ("cli", "testing"),
     ("__main__",),
 )
@@ -24,12 +27,54 @@ LAYER_OF: Mapping[str, int] = {
 IMPORTS_ALLOWED: Mapping[str, frozenset[str]] = {
     "__init__": frozenset(),
     "codes": frozenset(),
-    "errors": frozenset({"codes"}),
+    "errors": frozenset({"codes", "models"}),
     "models": frozenset(),
     "paths": frozenset({"codes", "errors"}),
     "jsonout": frozenset({"errors", "models"}),
+    "store": frozenset({"codes", "errors", "models"}),
+    "envelope": frozenset({"codes", "errors"}),
+    "transcripts": frozenset({"models"}),
+    "routes": frozenset({"models"}),
+    "delivery": frozenset({"envelope", "models", "routes", "store", "transcripts"}),
+    "drain": frozenset(
+        {
+            "delivery",
+            "errors",
+            "hls",
+            "identity",
+            "models",
+            "paths",
+            "routes",
+            "store",
+            "targets",
+            "transcripts",
+        }
+    ),
+    "config": frozenset({"codes", "errors", "models", "paths"}),
+    "runtime": frozenset({"codes", "config", "errors"}),
+    "identity": frozenset({"codes", "errors", "models"}),
+    "targets": frozenset({"codes", "config", "errors", "identity", "models"}),
     "hls": frozenset({"errors", "models", "paths"}),
-    "cli": frozenset({"codes", "errors", "hls", "jsonout", "models"}),
+    "cli": frozenset(
+        {
+            "codes",
+            "config",
+            "delivery",
+            "drain",
+            "envelope",
+            "errors",
+            "hls",
+            "identity",
+            "jsonout",
+            "models",
+            "paths",
+            "routes",
+            "runtime",
+            "store",
+            "targets",
+            "transcripts",
+        }
+    ),
     "testing": frozenset(),
     "__main__": frozenset({"cli"}),
 }
@@ -38,8 +83,16 @@ SIBLING_IMPORTS_ALLOWED: Mapping[str, Mapping[str, frozenset[str]]] = {
     "cli": {
         "parsing": frozenset(),
         "presentation": frozenset(),
-        "dispatch": frozenset({"parsing", "presentation"}),
+        "context": frozenset(),
+        "messages": frozenset({"context", "presentation"}),
+        "info": frozenset({"context", "presentation"}),
+        "doctor": frozenset({"context", "presentation"}),
+        "dispatch": frozenset({"context", "doctor", "info", "messages", "parsing"}),
         "__init__": frozenset({"dispatch", "parsing", "presentation"}),
+    },
+    "routes": {
+        "fake": frozenset(),
+        "__init__": frozenset({"fake"}),
     },
     "testing": {
         "__init__": frozenset(),
@@ -52,6 +105,10 @@ SIBLING_IMPORTS_ALLOWED: Mapping[str, Mapping[str, frozenset[str]]] = {
 
 PACKAGE_ROOT_IMPORTS_ALLOWED: Mapping[str, frozenset[str]] = {
     "bellhop.__main__": frozenset({"bellhop.cli"}),
+    "bellhop.delivery": frozenset({"bellhop.routes", "bellhop.transcripts"}),
+    "bellhop.drain": frozenset({"bellhop.routes", "bellhop.transcripts"}),
+    "bellhop.cli.context": frozenset({"bellhop.routes", "bellhop.transcripts"}),
+    "bellhop.cli.messages": frozenset({"bellhop.routes"}),
 }
 
 

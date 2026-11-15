@@ -326,7 +326,7 @@ class Measure:
         if not pattern.search(s.pane()):
             self.run.save_pane(s.name, f"{scenario}-no-dialog")
             if s.harness == "codex" and scenario == "S3b":
-                self.record(s, rep, scenario, None, na="Codex opened no question dialog in its default mode (request_user_input asked for, nothing shown)")
+                self.record(s, rep, scenario, None, not_measured="Codex opened no question dialog in its default mode (request_user_input asked for, nothing shown)")
             else:
                 self.record(s, rep, scenario, None, error="dialog never appeared")
             return

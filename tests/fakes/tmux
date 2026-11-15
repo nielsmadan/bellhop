@@ -4,9 +4,13 @@ printf '%s\n' "$*" >> "$dir/fake-tmux.log"
 for last; do :; done
 case "$5" in
     display-message)
-        if [ "$last" = "#{pane_dead}" ]; then cat "$dir/fake-dead.txt" 2>/dev/null || echo 0; else echo "99999999 %0"; fi ;;
+        if [ "$last" = "#{pane_dead}" ]; then
+            cat "$dir/fake-dead.txt" 2>/dev/null || echo 0
+        else
+            echo "$(cat "$dir/fake-pane-pid.txt" 2>/dev/null || echo 99999999) %0"
+        fi ;;
     capture-pane) cat "$dir/fake-screen.txt" ;;
-    list-sessions) exit 1 ;;
+    list-sessions) [ -f "$dir/fake-server-up.txt" ] || exit 1 ;;
     list-panes) cat "$dir/fake-panes.txt" 2>/dev/null ;;
     send-keys) if [ -f "$dir/fake-after-keys.txt" ]; then cp "$dir/fake-after-keys.txt" "$dir/fake-screen.txt"; fi ;;
 esac

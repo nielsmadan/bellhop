@@ -5,7 +5,7 @@ from bellhop.codes import INVALID_ENVIRONMENT
 from bellhop.errors import BellhopError
 
 
-def _home(env: Mapping[str, str]) -> Path:
+def home(env: Mapping[str, str]) -> Path:
     home = env.get("HOME")
     return Path(home) if home else Path.home()
 
@@ -13,7 +13,7 @@ def _home(env: Mapping[str, str]) -> Path:
 def xdg_home(env: Mapping[str, str], variable: str, default: str) -> Path:
     value = env.get(variable)
     if not value:
-        return _home(env) / default
+        return home(env) / default
     path = Path(value)
     if not path.is_absolute():
         raise BellhopError(
