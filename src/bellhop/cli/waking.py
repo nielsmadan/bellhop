@@ -41,14 +41,32 @@ def current_binding(ctx: Context, agent: str) -> Binding | None:
     return next((binding for binding in ctx.bindings if binding.agent == agent), None)
 
 
+def replay_warnings(asked: Message, stored: Message) -> list[str]:
+    same = (asked.target_kind, asked.target, asked.body) == (
+        stored.target_kind,
+        stored.target,
+        stored.body,
+    )
+    return [] if same else [key_reused(asked.key or "", stored)]
+
+
+def key_reused(key: str, stored: Message) -> str:
+    return f"key '{key}' is already stored for {stored.id} with another target or text"
+
+
 def store(ctx: Context, message: Message | None) -> Message | None:
-    return insert_message(ctx.conn, message) if message is not None else None
+    if message is None:
+        return None
+    stored = insert_message(ctx.conn, message)
+    if stored.id != message.id:
+        ctx.warnings += replay_warnings(message, stored)
+    return stored
 
 
 def setup(ctx: Context) -> StartSetup:
     return StartSetup(
         env=ctx.env,
-        tmux=tmux_for(ctx.env, ctx.config.tmux_socket),
+        tmux=tmux_for(ctx.env, ctx.config.tmux_socket, umask=ctx.caller_umask),
         runtime_dir=lambda: resolve_runtime_dir(ctx.env, ctx.config),
         python=sys.executable,
         new_id=lambda: str(uuid.uuid4()),
@@ -93,6 +111,8 @@ def wake(agent: str, message: Message | None, cause: str, ctx: Context, *, retry
             stored, started = begin(
                 ctx.conn, configured, message, cause=cause, setup=setup(ctx), now=ctx.now()
             )
+            if message is not None and stored is not None and stored.id != message.id:
+                ctx.warnings += replay_warnings(message, stored)
         except CannotLaunch as error:
             if retry:
                 raise

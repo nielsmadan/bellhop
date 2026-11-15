@@ -1,3 +1,4 @@
+import os
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
@@ -7,7 +8,8 @@ import pytest
 from bellhop.cli.waking import server_alive
 from bellhop.codes import INVALID_CONFIG, USAGE
 from bellhop.codex_session import parse
-from bellhop.config import AgentConfig
+from bellhop.config import AgentConfig, Config
+from bellhop.drain import drainer_starts
 from bellhop.errors import BellhopError
 from bellhop.identity import Proc
 from bellhop.launch import (
@@ -28,7 +30,7 @@ from bellhop.launch import (
 from bellhop.models import Binding, Session
 from bellhop.routes.fake import FakeRoute
 from bellhop.store import begin_start, connect
-from bellhop.tmux import Tmux
+from bellhop.tmux import Tmux, tmux_executable
 from conftest import (
     CLAUDE_TRUST,
     NOW,
@@ -442,3 +444,69 @@ def test_a_start_setup_keeps_the_callers_environment_out_of_its_repr() -> None:
     setup = StartSetup({"GH_TOKEN": "secret-value"}, Tmux(), Path, "py", str)
 
     assert "secret-value" not in repr(setup)
+
+
+@pytest.mark.parametrize(
+    ("configured", "target"),
+    [
+        ("", "-S {tmp}/foreign.sock enki:%0"),
+        ("fleet", "-L other enki:%0"),
+        ("", "-L other enki:%0"),
+    ],
+)
+def test_the_drainer_never_contacts_a_tmux_server_a_starting_row_chooses(
+    tmp_path: Path, fake_tmux: FakeTmux, configured: str, target: str
+) -> None:
+    conn = connect(tmp_path / "s.sqlite")
+    env = {"PATH": str(Path(fake_tmux.executable).parent), "TMUX_TMPDIR": str(tmp_path)}
+    config = Config(Path("/c/config.toml"), tmux_socket=configured)
+    check = drainer_starts(conn, lambda s, b: FakeRoute(), env, lambda: config)
+
+    progress = check(starting(tmux_target=target.format(tmp=tmp_path)), [], NOW)
+    conn.close()
+
+    assert progress.state == "failed"
+    assert progress.detail.endswith("is not the configured one")
+    assert fake_tmux.calls() == []
+
+
+@pytest.mark.parametrize("target", ["-L fleet enki:%0", "-S {tmp}/tmux-{uid}/fleet enki:%0"])
+def test_the_drainer_checks_a_start_on_the_configured_server_however_it_is_spelled(
+    tmp_path: Path, fake_tmux: FakeTmux, target: str
+) -> None:
+    conn = connect(tmp_path / "s.sqlite")
+    fake_tmux.show(CLAUDE_TRUST)
+    env = {"PATH": str(Path(fake_tmux.executable).parent), "TMUX_TMPDIR": str(tmp_path)}
+    config = Config(Path("/c/config.toml"), tmux_socket="fleet")
+    check = drainer_starts(conn, lambda s, b: FakeRoute(), env, lambda: config)
+
+    progress = check(starting(tmux_target=target.format(tmp=tmp_path, uid=os.getuid())), [], NOW)
+    conn.close()
+
+    assert progress.detail.startswith(f"{START_FAILED}: stopped at the trust-folder screen")
+
+
+def test_without_tmux_on_path_the_drainer_tries_the_system_locations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    system = tmp_path / "usr-bin-tmux"
+    system.write_text("#!/bin/sh\n")
+    system.chmod(0o755)
+    monkeypatch.setattr("bellhop.tmux.SYSTEM_TMUX", (str(tmp_path / "absent"), str(system)))
+
+    assert tmux_executable({"PATH": str(tmp_path / "empty")}) == str(system)
+
+
+def test_tmux_on_path_wins_over_the_system_locations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    on_path = tmp_path / "bin" / "tmux"
+    on_path.parent.mkdir()
+    on_path.write_text("#!/bin/sh\n")
+    on_path.chmod(0o755)
+    system = tmp_path / "usr-bin-tmux"
+    system.write_text("#!/bin/sh\n")
+    system.chmod(0o755)
+    monkeypatch.setattr("bellhop.tmux.SYSTEM_TMUX", (str(system),))
+
+    assert tmux_executable({"PATH": str(on_path.parent)}) == str(on_path)

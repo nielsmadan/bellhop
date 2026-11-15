@@ -15,6 +15,7 @@ from bellhop.paths import data_home
 PROTOCOL = 1
 BUDGET_SECONDS = 5.0
 ATTEMPTS = 2
+DETAIL_LIMIT = 200
 FIRST_ATTEMPT_SHARE = 0.8
 OVERRIDE = "BELLHOP_HOOKLINESINKER"
 NOT_FOUND = f"hooklinesinker not found; install it or set {OVERRIDE}"
@@ -31,6 +32,12 @@ class SessionList:
 
 class _Malformed(ValueError):
     pass
+
+
+def first_line(text: str) -> str:
+    stripped = text.strip()
+    line = stripped.splitlines()[0].strip() if stripped else ""
+    return line if len(line) <= DETAIL_LIMIT else f"{line[:DETAIL_LIMIT]}…"
 
 
 def _run(
@@ -98,7 +105,7 @@ def list_sessions(
     binary = find_binary(env)
     result = _invoke(binary, env, budget, run, clock)
     if result.returncode != 0:
-        detail = (result.stderr or result.stdout).strip() or "no output"
+        detail = first_line(result.stderr or result.stdout) or "no output"
         raise HlsUnavailable(f"hooklinesinker sessions --json exited {result.returncode}: {detail}")
     return parse_sessions(result.stdout)
 

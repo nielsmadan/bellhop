@@ -495,6 +495,18 @@ def test_a_launch_prompt_takes_its_sender_and_key_and_a_repeat_starts_nothing(
         payload_message(first)["id"],
     )
     assert fake_tmux.commands().count("new-session") == 1
+    assert again["warnings"] == []
+
+
+def test_a_launch_key_reused_for_another_prompt_says_so(agents: Bell) -> None:
+    _, first = agents.run("launch", "enki", "--no-wait", "--prompt", "hi", "--key", "k1")
+
+    _, again = agents.run("launch", "enki", "--no-wait", "--prompt", "bye", "--key", "k1")
+
+    stored_id = payload_message(first)["id"]
+    assert again["warnings"] == [
+        f"key 'k1' is already stored for {stored_id} with another target or text"
+    ]
 
 
 def test_a_wake_that_starts_its_agent_warns_that_confirm_does_not_wait(agents: Bell) -> None:
@@ -593,7 +605,7 @@ def test_a_launch_over_a_stale_start_settles_the_old_prompt_and_keeps_one_new_on
             'cwd = "/no/such/dir"\ncommand = ["/opt/fleet/claude"]',
             "its cwd /no/such/dir is not a directory",
         ),
-        ('command = ["/opt/fleet/claude"]', "there is no tmux on PATH"),
+        ('command = ["/opt/fleet/claude"]', "there is no tmux on PATH or at the system locations"),
     ],
 )
 def test_a_wake_that_cannot_start_stores_its_message_and_leaves_the_binding(
@@ -776,3 +788,38 @@ def test_a_wake_with_confirm_says_it_does_not_wait(agents: Bell) -> None:
 
     assert payload["warnings"] == ["--confirm does not wait for a message that starts its agent"]
     check_golden("send-wake-confirm", payload)
+
+
+def test_a_tmux_that_refuses_the_connection_stores_the_wake(
+    agents: Bell, fake_tmux: FakeTmux
+) -> None:
+    fake_tmux.refuse_connection()
+
+    code, payload = agents.run("send", "enki", "hi", "--wake")
+
+    assert (code, payload_message(payload)["state"], stored_binding(agents)) == (0, "pending", None)
+    assert "Operation not permitted" in payload["warnings"][0]
+
+
+def test_the_tmux_client_runs_with_the_caller_s_umask(agents: Bell, fake_tmux: FakeTmux) -> None:
+    previous = os.umask(0o022)
+    try:
+        agents.run("send", "enki", "hi", "--wake")
+    finally:
+        os.umask(previous)
+
+    assert fake_tmux.client_umask() == "0022"
+
+
+def test_a_send_to_an_agent_that_is_starting_says_nothing_about_waking_it(agents: Bell) -> None:
+    agents.run("send", "enki", "first", "--wake")
+
+    code, payload = agents.run("send", "enki", "second")
+
+    assert (code, payload_message(payload)["state"], payload["warnings"]) == (0, "pending", [])
+
+
+def test_a_cause_with_a_control_character_is_usage(agents: Bell, fake_tmux: FakeTmux) -> None:
+    code, payload = agents.run("launch", "enki", "--no-wait", "--cause", "x\x1b[2J")
+
+    assert (code, payload["error"]["code"], fake_tmux.commands()) == (2, "usage", [])

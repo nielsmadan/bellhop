@@ -7,7 +7,9 @@ import pytest
 from bellhop.cli import main
 from bellhop.cli.context import Context
 from bellhop.cli.info import probed_rows
-from conftest import ALPHA, BETA, Bell, FakeHls, check_golden, pong_line, pong_server
+from bellhop.models import Binding
+from bellhop.store import connect, get_binding, save_binding_unless
+from conftest import ALPHA, BETA, NOW, Bell, FakeHls, check_golden, pong_line, pong_server
 from fake_app_server import app_server
 
 
@@ -287,3 +289,46 @@ def test_a_route_check_that_ends_past_the_budget_skips_nothing(
 
     assert skipped == 0
     assert len(rows) == 4
+
+
+def test_bind_inside_a_launched_codex_agent_keeps_its_own_app_server(
+    bell: Bell, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    conn = connect(bell.tmp / "state-home" / "bellhop" / "bellhop.sqlite")
+    launched = Binding(
+        "nanna",
+        "codex",
+        "live",
+        BETA,
+        None,
+        None,
+        "/rt/codex-nanna-ab.sock",
+        4343,
+        "-S /t nanna:%0",
+        "launch",
+        None,
+        NOW,
+    )
+    save_binding_unless(conn, launched, lambda existing: False)
+    conn.close()
+    monkeypatch.setenv("CODEX_THREAD_ID", BETA)
+    monkeypatch.setenv("CODEX_HOME", str(bell.tmp / "other-codex"))
+
+    bell.run("bind", "nanna")
+    bell.run("bind", "nanna")
+
+    conn = connect(bell.tmp / "state-home" / "bellhop" / "bellhop.sqlite")
+    binding = get_binding(conn, "nanna")
+    conn.close()
+    assert binding is not None
+    assert (binding.app_server_socket, binding.cause) == ("/rt/codex-nanna-ab.sock", "bind")
+
+
+def test_bind_refuses_a_name_over_64_characters_as_usage(
+    bell: Bell, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", ALPHA)
+
+    code, payload = bell.run("bind", "a" * 300)
+
+    assert (code, payload["error"]["code"]) == (2, "usage")

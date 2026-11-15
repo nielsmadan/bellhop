@@ -116,3 +116,15 @@ def test_a_bad_edit_keeps_the_last_good_config_and_is_reported_once(tmp_path: Pa
     sockets = [current().tmux_socket, current().tmux_socket]
 
     assert (sockets, len(errors)) == (["good", "good"], 1)
+
+
+@pytest.mark.parametrize(("length", "valid"), [(64, True), (65, False)])
+def test_an_agent_name_is_at_most_64_characters(length: int, valid: bool) -> None:
+    text = f"[agents.{'a' * length}]\nharness = 'pi'\n"
+
+    if valid:
+        assert list(parse_config(Path("/c/config.toml"), text, Path("/h")).agents) == ["a" * length]
+    else:
+        with pytest.raises(BellhopError) as caught:
+            parse_config(Path("/c/config.toml"), text, Path("/h"))
+        assert caught.value.code == "invalid_config"

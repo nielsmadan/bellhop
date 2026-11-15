@@ -15,11 +15,38 @@ What bellhop does not do, or does only partly, and what you see when you hit it.
 - **A wake's own message arrives first.** With `send --wake`, the message is the started agent's
   first prompt; messages to that agent that were already pending follow once the session is
   live, in their own order.
+- **Held messages wait in `bellhop inbox` until the agent runs it.** This includes callboard's
+  mail doorbells: `callboard read` does not clear them, so an agent that reads its mail through
+  callboard still sees them in `bellhop inbox`, and every pushed message counts them in its
+  "N more waiting" line.
+- **A name stays bound until its session ends or another session binds it.** There is no unbind.
+  One session can hold several names; `whoami` then reports one of them, and `bellhop inbox` takes
+  the held messages for all of them.
 - **Messages queued behind a failed start wait.** They stay `pending` until the agent is launched
   again or a session binds the name; messages to an agent do not expire.
 - **A session-target message can wait 24 hours, then fails as `expired`.** This hits a Codex
   thread that hooklinesinker stops listing (for example after a daemon restart, until its next
   turn): a message to its session id stays `pending` until then.
+
+## The drainer
+
+- **A drainer that is stopped or replaced forgets which sessions it saw working.** A `sent` message
+  older than 10 minutes to a session that is still working is then no longer watched by the
+  drainer; `bellhop status <id>` still checks the transcript each time it is asked.
+
+- **The drainer keeps the environment and the sandbox of whichever session first needed it, until
+  it exits.** Any bellhop command that finds work can start it: a `send` from a sandboxed agent,
+  a `status`, a `doctor`. It then delivers and confirms for every harness with that session's
+  `PATH`, variables and sandbox. It finds `tmux` on its own `PATH`, else at
+  `/opt/homebrew/bin/tmux`, `/usr/local/bin/tmux` or `/usr/bin/tmux`; it never runs a program named
+  by the store or by a file in the state or runtime directory, and it finishes a start only on
+  the tmux server `config.toml` names. A drainer that cannot run
+  hooklinesinker shows as a failed `drainer` check in `bellhop doctor`, with its pid: stop it, and
+  the next bellhop command starts a fresh one in that command's environment.
+
+- **A hard link planted beside the store in the moment before SQLite opens it is not caught.**
+  bellhop removes a planted `-wal` or `-shm` and creates each as a private file before SQLite opens
+  the store, and SQLite refuses a symlinked one; a hard link made in between is written by SQLite.
 
 ## Claude Code
 
@@ -57,6 +84,12 @@ What bellhop does not do, or does only partly, and what you see when you hit it.
   start command. Keep secrets in the agent's `command` wrapper.
 - **`SOPS_SECRETS` and `SOPS_AGE_KEY_FILE` reach every launched agent** (they are on the
   environment allowlist).
+- **A tmux server inherits the sandbox of whatever starts it.** bellhop runs its tmux client with
+  the umask of the command that called bellhop, so a server it starts gets your umask. If bellhop's
+  `new-session` is the first call on a tmux socket and runs inside a sandboxed session, that
+  server and every agent on it run inside that sandbox, and an agent `command` wrapper that
+  applies its own sandbox may fail to start nested inside it. Start the fleet's tmux server
+  yourself, outside any sandbox.
 - **bellhop never answers a startup screen.** A trust, login, hook-review or similar screen fails
   the start with the command to attach; answer it once in the agent's home and launch again.
 - **Restart a Codex or Pi agent after changing its homes.** bellhop reads an agent's `CODEX_HOME`

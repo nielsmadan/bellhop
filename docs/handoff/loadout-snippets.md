@@ -49,13 +49,14 @@ after every bellhop upgrade: an extension on an older wire is not reachable.
 ## 3. The skill
 
 A skill is a folder holding `SKILL.md` in `<source>/skills/` (loadout
-`docs/user/reference/configuration.md`, "That is the only skill form"). Copy bellhop's:
+`docs/user/reference/configuration.md`, "That is the only skill form"). Export bellhop's from
+the installed wheel; it writes `<source>/skills/bellhop/SKILL.md` and is safe to repeat:
 
 ```sh
-cp -R <bellhop checkout>/skills/bellhop <source>/skills/bellhop
+bellhop integration export skill --to <source>/skills
 ```
 
-It reaches Claude (`~/.claude/skills`), Codex (`~/.codex/skills`) and Pi (`~/.pi/agent/skills`).
+Re-run it after every bellhop upgrade. It reaches Claude (`~/.claude/skills`), Codex (`~/.codex/skills`) and Pi (`~/.pi/agent/skills`).
 To narrow it, add to the manifest:
 
 ```toml

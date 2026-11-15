@@ -1,7 +1,7 @@
 # Proposals for hooklinesinker
 
 **What to do:** take each section to hooklinesinker as an issue or change. Each lists what bellhop
-saw (hls 1.5.1 and Codex 0.167.1, measured in bellhop Tasks B2 to B7) and the smallest change
+saw (hls 1.5.1 and Codex 0.167.1, measured with bellhop on 2026-11-13 and 2026-11-14) and the smallest change
 that would fix it. None is applied; bellhop works around each as described in
 [Known limits](../reference/limits.md).
 
@@ -44,7 +44,7 @@ new thread replaces the old session.
 **Evidence.** For a thread on the shared Codex daemon hls 1.5.1 reports `process: null`; after
 `codex app-server daemon restart` it stops listing the daemon's threads, and lists a thread again
 only after its next turn (routes.md, "hls 1.5.1 reports `process: null` for a thread on the
-shared daemon"; measured in Task B5 on an isolated daemon). bellhop's binding for such an agent
+shared daemon"; measured on 2026-11-14 on an isolated daemon). bellhop's binding for such an agent
 fails ("thread no longer listed") until the next turn, and a message to the session id waits.
 
 **Smallest change.** Record the daemon's pid as the thread's process (the TUI's hook knows which
@@ -54,7 +54,7 @@ process is alive.
 ## 5. A Codex thread is listed only after its first turn
 
 **Evidence.** A Codex session appears in `sessions --json` only once its first turn has started
-(routes.md, "A Codex session is listed by hooklinesinker only after its first turn"; in Task B-7f
+(routes.md, "A Codex session is listed by hooklinesinker only after its first turn"; on 2026-11-14
 a launched Codex was listed while its first turn was still running). An idle new Codex session
 cannot be reached until someone types into it, and `bellhop launch` needs a first prompt for a
 Codex agent.

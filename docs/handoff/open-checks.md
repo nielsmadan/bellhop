@@ -24,10 +24,14 @@ Not run: this run never starts an agent with permission checks off. bellhop's ro
 on the permission mode, but the dialog cells (S3, S3b) behave differently when no dialog ever
 opens.
 
-In a scratch clone of bellhop, edit `tests/smoke/test_claude.py` (and `test_codex.py`,
-`test_pi.py`): add your unattended-mode flags to the `extra` list of each `run.launch(...)`
-call, before any `--` already in that list, so they reach the harness ahead of the prompt.
-Then, in that clone:
+**This check is your call.** It runs real Claude, Codex and Pi agents with permission checks off
+and with your real credentials (the smoke helper launches them through `sops-exec` with
+`AGENT_REQUIRE_SECRETS=1`), with no approval step, in `.cache/smoke/<run>/work` directories only.
+
+In a scratch clone of bellhop, change the permission arguments in
+`src/bellhop/testing/agents.py` (`launch_argv`): **replace** Claude's `--permission-mode default`
+and Codex's `-a on-request -s read-only` with your unattended mode's flags, rather than adding
+flags after them. Then, in that clone:
 
 ```sh
 just smoke
@@ -39,8 +43,8 @@ Expect the delivery cells to pass; the permission-dialog cells will report that 
 
 Found: two unit tests in `tests/test_cli.py` (`sessions` checking each endpoint session's route)
 resolved the default runtime dir before the test fixture gave every test a private one; it was
-created on 2026-11-14 at 10:01:47 local time during Task B-4. It is empty and mode 0700. Since
-commit `e1f48a1` every test gets its own runtime dir and fails if it reaches `/tmp/bellhop-<uid>`.
+created on 2026-11-14 at 10:01:47 local time. It is empty and mode 0700. Every test now gets its
+own runtime dir and fails if it reaches `/tmp/bellhop-<uid>`.
 Remove it yourself if no bellhop session of yours uses it:
 
 ```sh

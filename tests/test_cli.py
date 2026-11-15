@@ -5,6 +5,7 @@ from importlib.metadata import version
 import pytest
 
 from bellhop.cli import main
+from bellhop.cli.context import Context
 from bellhop.cli.parsing import json_requested
 from bellhop.hls import list_sessions
 from conftest import FakeHls
@@ -274,3 +275,7 @@ def test_interrupt_with_json_prints_the_interrupted_envelope(
 def test_json_after_the_end_of_options_is_text_not_a_flag() -> None:
     assert json_requested(["send", "x", "--", "--json"]) is False
     assert json_requested(["send", "x", "--json", "--", "y"]) is True
+
+
+def test_a_context_keeps_the_callers_environment_out_of_its_repr() -> None:
+    assert "secret-value" not in repr(Context({"GH_TOKEN": "secret-value"}))

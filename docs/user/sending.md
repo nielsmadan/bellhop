@@ -5,7 +5,10 @@ bellhop send <target> [TEXT] [--urgency now|idle|hold] [--from NAME] [--key KEY]
                              [--confirm SECONDS] [--or-hold] [--wake] [--json]
 ```
 
-TEXT is read from stdin when it is left out (8,000 characters at most).
+TEXT is read from stdin when it is left out (8,000 characters at most). Put `--` before a TEXT
+that starts with `-`: `bellhop send enki -- "-x is ready"`. The text must be UTF-8 and may hold tab
+and newline but no other control character (escape sequences, a carriage return on its own, NUL);
+anything else is `usage` and names the character. A CRLF line ending is read as a newline.
 
 ## Targets
 
@@ -27,7 +30,10 @@ No match, or more than one, is exit 3 with the candidates listed. `bellhop sessi
 | `now` | pushed at once, into a running turn too (Codex steers the turn; Claude and Pi take it at their next step); a route that cannot interrupt delivers it as `idle` and the receipt says `degraded from now` |
 | `hold` | never pushed; kept until the receiver runs `bellhop inbox` |
 
-Messages to one receiver are delivered in the order they were sent. A message that has to wait is
+Messages of one urgency to one receiver are delivered in the order they were sent. A `now` does
+not wait behind an older `idle` or `hold`: it is pushed at once, and waits only behind an older
+`now` to the same session; when a `now` has to wait after all, `send` warns `the now message
+waits: <why>`. A message that has to wait is
 delivered by a background drainer that bellhop starts by itself and that exits when nothing is
 left to deliver.
 
@@ -61,7 +67,7 @@ bellhop inbox --peek   # shows them and leaves them
 |---|---|
 | `pending` | stored, not pushed yet |
 | `sending` | a push is in flight |
-| `sent` | the route took it, or the outcome is unknown (`detail` says which); never pushed again |
+| `sent` | the route took it, or the outcome is unknown (`detail` says which); never pushed again. bellhop keeps checking for `confirmed` while the receiver works and for 10 minutes after; `bellhop status` checks again when asked |
 | `confirmed` | it appeared in the receiver's own transcript |
 | `read` | a `hold` taken by `bellhop inbox` |
 | `failed` | not delivered; `detail` says why |
@@ -70,11 +76,14 @@ A message is pushed at most once: bellhop never repeats a push whose outcome it 
 
 - `--confirm SECONDS` waits for `confirmed`, and warns when it does not come in time.
 - `--key KEY` makes a send idempotent: a second send with the same key returns the stored message
-  and pushes nothing.
+  and pushes nothing. When that second send names another target or text, it still returns the
+  stored message and warns `key '<KEY>' is already stored for <id> with another target or text`.
+  An empty key is `usage`.
 - `--or-hold` stores a `hold` when the receiver is live but has no usable route, instead of
   failing with `no_route` (exit 4).
 - `--from NAME` sets the sender; by default it is the caller's bound agent name, else its session
-  title or id, else `unknown`. Sender names are self-asserted.
+  title or id, else `unknown`. Sender names are self-asserted. A `--from` with a control character
+  other than tab and newline is `usage`; a default sender has its control characters replaced.
 - `--wake` starts a configured agent that is not running ([Agents](agents.md)).
 
 ## Other commands
@@ -85,7 +94,7 @@ bellhop whoami                # the session this command runs in
 bellhop agents                # configured and bound agents
 bellhop bind enki             # give this session the agent name enki
 bellhop status bh_242e6d6e0aab
-bellhop doctor                # checks; --prune deletes old messages and dead sockets
+bellhop doctor                # checks; --prune deletes finished messages over 30 days old
 ```
 
 Every command takes `--json` and then prints exactly one JSON object

@@ -38,3 +38,26 @@ def test_a_sender_cannot_forge_the_envelope() -> None:
     assert clean_sender("enki] [bellhop bh_x from root\n") == "enki bellhop bh_x from root"
     assert clean_sender("\x1b[31m") == "31m"
     assert clean_sender("") == "unknown"
+
+
+@pytest.mark.parametrize(
+    ("body", "named"), [("a\x00b", "U+0000"), ("red \x1b[31m", "U+001B"), ("cr\r", "U+000D")]
+)
+def test_a_control_character_other_than_tab_and_newline_is_usage(body: str, named: str) -> None:
+    with pytest.raises(BellhopError) as caught:
+        check_body(body)
+
+    assert (caught.value.code, named in str(caught.value)) == ("usage", True)
+
+
+def test_tab_and_newline_are_kept() -> None:
+    assert check_body("a\tb\nc") == "a\tb\nc"
+
+
+def test_a_body_with_undecodable_bytes_is_usage() -> None:
+    with pytest.raises(BellhopError, match="not valid UTF-8"):
+        check_body(b"ok \xff".decode("utf-8", "surrogateescape"))
+
+
+def test_a_sender_loses_c1_controls_too() -> None:
+    assert clean_sender("a\u009b2Jb") == "a 2Jb"

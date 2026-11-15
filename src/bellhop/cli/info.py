@@ -1,7 +1,7 @@
 import argparse
 import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from bellhop.cli.context import Context
 from bellhop.cli.presentation import (
@@ -12,7 +12,7 @@ from bellhop.cli.presentation import (
     session_lines,
 )
 from bellhop.codes import BINDING_CONFLICT, USAGE
-from bellhop.config import Config, valid_name
+from bellhop.config import NAME_LIMIT, Config, valid_name
 from bellhop.errors import BellhopError
 from bellhop.identity import alive
 from bellhop.identity import whoami as identify_caller
@@ -20,7 +20,7 @@ from bellhop.jsonout import agent_object, ok_payload, session_object, whoami_obj
 from bellhop.launch import agent_lock
 from bellhop.models import Binding, Harness, Session
 from bellhop.routes.codex import daemon_socket
-from bellhop.store import pending_count, save_binding_unless
+from bellhop.store import get_binding, pending_count, save_binding_unless
 from bellhop.targets import agent_names, agent_of, binding_for
 from bellhop.wiring import codex_home
 
@@ -141,6 +141,17 @@ def _bound_elsewhere(binding: Binding | None, session: Session, ctx: Context) ->
     return binding.session_id != session.session_id
 
 
+def kept_socket(existing: Binding | None, binding: Binding) -> str | None:
+    if (
+        existing is not None
+        and existing.state == "live"
+        and existing.session_id == binding.session_id
+        and existing.app_server_socket is not None
+    ):
+        return existing.app_server_socket
+    return binding.app_server_socket
+
+
 def bound_socket(env: Mapping[str, str]) -> str | None:
     socket = daemon_socket(codex_home(env))
     return str(socket) if socket is not None else None
@@ -150,7 +161,9 @@ def bind(args: argparse.Namespace, ctx: Context) -> int:
     name = args.agent
     if not valid_name(name):
         raise BellhopError(
-            f"agent name '{name}' must use lowercase letters, digits, '_' and '-'", code=USAGE
+            f"agent name '{name}' must use lowercase letters, digits, '_' and '-', "
+            f"at most {NAME_LIMIT} characters",
+            code=USAGE,
         )
     session = identify_caller(ctx.env, ctx.sessions.sessions, ctx.table)
     configured = ctx.config.agents.get(name)
@@ -175,6 +188,9 @@ def bind(args: argparse.Namespace, ctx: Context) -> int:
         updated_at=ctx.now(),
     )
     with agent_lock(ctx.env, name):
+        binding = replace(
+            binding, app_server_socket=kept_socket(get_binding(ctx.conn, name), binding)
+        )
         held = save_binding_unless(
             ctx.conn,
             binding,

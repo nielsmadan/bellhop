@@ -11,6 +11,7 @@ from bellhop.paths import home as home_dir
 from bellhop.paths import xdg_home
 
 NAME = re.compile(r"[a-z0-9][a-z0-9_-]*")
+NAME_LIMIT = 64
 VARIABLE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 TOP_KEYS = frozenset({"runtime_dir", "tmux_socket", "agents"})
 AGENT_KEYS = frozenset({"harness", "cwd", "command", "env", "server_command"})
@@ -39,7 +40,7 @@ def config_path(env: Mapping[str, str]) -> Path:
 
 
 def valid_name(name: str) -> bool:
-    return NAME.fullmatch(name) is not None
+    return len(name) <= NAME_LIMIT and NAME.fullmatch(name) is not None
 
 
 def _fail(path: Path, key: str, problem: str) -> BellhopError:
@@ -78,7 +79,11 @@ def _unknown(path: Path, prefix: str, keys: object, allowed: frozenset[str]) -> 
 def _agent(path: Path, name: str, raw: object, home: Path) -> AgentConfig:
     key = f"agents.{name}"
     if not valid_name(name):
-        raise _fail(path, key, "agent names use lowercase letters, digits, '_' and '-'")
+        raise _fail(
+            path,
+            key,
+            f"agent names use lowercase letters, digits, '_' and '-', at most {NAME_LIMIT}",
+        )
     if not isinstance(raw, dict):
         raise _fail(path, key, "must be a table")
     _unknown(path, f"{key}.", raw, AGENT_KEYS)

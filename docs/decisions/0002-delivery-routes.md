@@ -11,7 +11,7 @@ spike ran every candidate through S1 (idle wake), S2 (push during a running turn
 and as an interrupt), S3 (permission prompt open), S3b (question dialog open), S7 (draft in the
 composer) and S10 (`/clear` or `/new` in the same process), three repetitions each, on Claude Code
 2.1.325, Codex 0.167.1 and Pi 1.5.2 with hooklinesinker 1.5.1. The table, the method and the
-answers to the plan's questions 1–5 are in [routes.md](../reference/routes.md).
+answers to the design questions 1–5 are in [routes.md](../reference/routes.md).
 
 The rules applied: a cell passes at 3/3, and `n/a` counts as a pass; a cell that was not measured
 is not a pass. A candidate that fails S3 or S3b is out. The `idle` route is the candidate passing the most of S1, S7 and S10, ties broken by
@@ -36,8 +36,8 @@ that passes S2 mid-turn, else degrades to `idle`.
   from its own environment; it never imitates another session and never needs
   `crossSessionInbound`. It is meant to listen on `<runtime_dir>/claude-<pid>.sock` with `<pid>` the
   Claude process hls reports; the spike used fixed socket names, so that naming, and whether the
-  relay's parent is that pid under the user's launch wrapper, is an assumption Task B6 measures.
-  B6 measured it (`docs/reference/routes.md`, "Claude relay, as built in Task B6") and
+  relay's parent is that pid under the user's launch wrapper, was an assumption until it was
+  measured on 2026-11-14 (`docs/reference/routes.md`, "Claude relay, as built"), and
   [ADR 0005](0005-claude-relay.md) records what the relay relies on.
 - **Codex.** No candidate failed S3. S3b could not be measured: Codex opened no question dialog
   in its default mode (see Consequences). `turn/start` on the shared daemon, `codex queue` on the
@@ -49,8 +49,9 @@ that passes S2 mid-turn, else degrades to `idle`.
   a per-session server for sessions bellhop launches. `codex queue` is not used: it needs the daemon
   and has no interrupt. `turn/steer` on the same connection passed S2 mid-turn 3/3, but with S3b
   not measured no Codex candidate passes the gate, so Codex `now` is degraded to `idle`
-  (`degraded_from: "now"`) until Task B5 measures S3b in a mode where Codex shows a question dialog.
-  B5 measured it; [ADR 0004](0004-codex-now.md) makes `turn/steer` Codex's `now` route.
+  (`degraded_from: "now"`) until S3b is measured in a mode where Codex shows a question dialog.
+  It was measured on 2026-11-14; [ADR 0004](0004-codex-now.md) makes `turn/steer` Codex's `now`
+  route.
   The route does not queue to the boundary itself; bellhop's drainer waits until the thread is idle.
   A stand-alone Codex session stays `hold`-only.
 - **Pi.** S3 and S3b are `n/a`; the extension passed S1, S7 and S10 3/3, `followUp` waited for the
@@ -61,9 +62,9 @@ that passes S2 mid-turn, else degrades to `idle`.
 Known limits, each measured, with what bellhop does about it:
 
 - **Codex S3b is not measured.** In its default mode Codex opened no question dialog, and plan or
-  collaboration mode was not tried. Codex `now` is therefore degraded to `idle` until Task B5
-  measures S3b; only then can `turn/steer` become Codex's `now` route. Superseded by
-  [ADR 0004](0004-codex-now.md): B5 measured S3b 3/3 safe.
+  collaboration mode was not tried. Codex `now` is therefore degraded to `idle` until S3b is
+  measured; only then can `turn/steer` become Codex's `now` route. Superseded by
+  [ADR 0004](0004-codex-now.md): S3b measured 3/3 safe on 2026-11-14.
 - **A Codex or Pi `now` push displaces the running turn's own answer.** In S2-interrupt the
   interrupted turn never produced its final answer on Codex (6 of 6) or Pi (3 of 3); Claude
   finished every interrupted turn (12 of 12).
@@ -82,7 +83,7 @@ Known limits, each measured, with what bellhop does about it:
   not at the `--listen` path either: Codex creates it in `/private/tmp/codex-daemon-<uid>/` named by
   the sha256 of that path and links the path to it, so cleanup must follow the link. Bindings for
   these sessions are keyed by
-  thread id and app-server socket, as the plan's store section already says, and `whoami` uses
+  thread id and app-server socket, and `whoami` uses
   `CODEX_THREAD_ID` rather than the process tree.
 - **The shared Codex daemon updates and restarts itself.** Five to seven minutes after it started,
   with a newer release available, its updater installed it and restarted the daemon, forcing the

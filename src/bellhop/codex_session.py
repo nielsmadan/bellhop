@@ -11,6 +11,7 @@ from pathlib import Path
 from types import FrameType
 
 from bellhop.codes import FAILURE_EXIT, USAGE_EXIT
+from bellhop.files import open_private
 from bellhop.paths import state_dir
 
 SOCKET_WAIT_SECONDS = 15.0
@@ -107,19 +108,20 @@ def log_path(env: Mapping[str, str], socket: Path) -> Path:
 
 def server_log(path: Path) -> int:
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
-    return os.open(path, flags, 0o600)
+    path.unlink(missing_ok=True)
+    return open_private(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
 
 
 def note(text: str) -> None:
     print(f"bellhop: codex session: {text}", file=sys.stderr, flush=True)
 
 
-def main(argv: Sequence[str], env: Mapping[str, str]) -> int:
+def main(argv: Sequence[str], env: Mapping[str, str], caller_umask: int) -> int:
     plan = parse(argv)
     if plan is None:
         note("bad arguments")
         return USAGE_EXIT
+    os.umask(caller_umask)
     log_file = log_path(env, plan.socket)
     log = server_log(log_file)
     try:

@@ -6,7 +6,8 @@ import sys
 import pytest
 
 from bellhop.cli import main
-from conftest import ALPHA, BETA, FAKE_HLS, Bell, check_golden, payload_message
+from bellhop.store import connect, insert_message
+from conftest import ALPHA, BETA, FAKE_HLS, Bell, check_golden, make_message, payload_message
 
 
 def ids(payload: dict[str, object]) -> list[str]:
@@ -109,10 +110,53 @@ def test_status_reports_the_store_and_warns_about_unknown_ids(bell: Bell) -> Non
 def test_inbox_text_escapes_terminal_controls_but_keeps_line_breaks(
     bell: Bell, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    bell.run("send", ALPHA, "one\n\x1b]0;pwned\x07two\u202e", "--urgency", "hold", "--from", "x")
+    bell.run("status", "bh_000000000000")
+    conn = connect(bell.tmp / "state-home" / "bellhop" / "bellhop.sqlite")
+    body = "one\n\x1b]0;pwned\x07two\u202e"
+    insert_message(conn, make_message(1, urgency="hold", target=ALPHA, body=body))
+    conn.close()
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", ALPHA)
 
     main(["inbox"])
 
     out = capsys.readouterr().out
     assert out.endswith("one\n\\x1b]0;pwned\\x07two\\u202e\n")
+
+
+def test_inbox_json_carries_each_message_s_text(
+    bell: Bell, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bell.run("send", ALPHA, "the build is green", "--urgency", "hold")
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", ALPHA)
+
+    _, peeked = bell.run("inbox", "--peek")
+    _, taken = bell.run("inbox")
+
+    assert (
+        [m["body"] for m in peeked["messages"]]
+        == [m["body"] for m in taken["messages"]]
+        == ["the build is green"]
+    )
+
+
+def test_status_rechecks_the_transcript_of_a_sent_message(bell: Bell) -> None:
+    _, sent = bell.run("send", ALPHA, "check me", "--from", "x")
+    message_id = payload_message(sent)["id"]
+    bell.transcript(ALPHA).write_text(f"[bellhop {message_id} from x] check me\n")
+
+    _, payload = bell.run("status", str(message_id))
+
+    assert payload["messages"][0]["state"] == "confirmed"
+
+
+def test_status_reports_the_stored_states_when_it_cannot_recheck(
+    bell: Bell, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, sent = bell.run("send", ALPHA, "check me", "--from", "x")
+    message_id = payload_message(sent)["id"]
+    monkeypatch.setenv("FAKE_HLS_EXIT", "3")
+
+    code, payload = bell.run("status", str(message_id))
+
+    assert (code, payload["messages"][0]["state"]) == (0, "sent")
+    assert payload["warnings"][0].startswith("cannot recheck transcripts: hooklinesinker")

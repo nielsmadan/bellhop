@@ -6,8 +6,9 @@
 
 ## Context
 
-ADR 0002 chose an MCP stdio relay as Claude's inside piece. Task B6 built it as `bellhop _relay`
-and measured what it can know (`docs/reference/routes.md`, "Claude relay, as built in Task B6").
+ADR 0002 chose an MCP stdio relay as Claude's inside piece. It is built as `bellhop _relay`, and
+what it can know was measured on 2026-11-14 (`docs/reference/routes.md`, "Claude relay, as
+built").
 Wire version 2 asks the inside piece to name the session it is in, so a push addressed to a
 session Claude has replaced with `/clear` is refused instead of landing in the new conversation.
 
@@ -29,12 +30,12 @@ The relay relies on seven things Claude Code does today, none of them a document
 5. A delivered frame is recorded as a `user` record or a `queued_command` attachment with
    `origin.kind: "peer"`, its text after the line "Another Claude session sent a message:".
 6. The messaging socket is named `<pid>.sock` after the Claude process that owns it. The
-   variables are inherited by a Claude's Bash-tool children (measured in Task B-6f in an isolated
+   variables are inherited by a Claude's Bash-tool children (measured on 2026-11-14 in an isolated
    smoke Claude: both set, the socket named after an ancestor pid; values never printed), so a
    Claude started from another Claude's shell could pass the outer channel down. The relay
    therefore listens only when its socket's file name is `<chosen Claude's pid>.sock`.
 7. Frame size: a body of bellhop's maximum length (8000 characters, all three-byte, about 24 KB
-   in UTF-8 and twice that JSON-escaped) arrived whole and was confirmed (Task B-6f smoke cell
+   in UTF-8 and twice that JSON-escaped) arrived whole and was confirmed (smoke cell
    `max-body`), so frames stay JSON-escaped.
 
 ## Consequences

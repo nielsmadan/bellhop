@@ -41,8 +41,11 @@ extension and Claude's MCP config.
   `candidates`, the `stored` message and any extra JSON `fields` its error envelope prints.
 - `models`: the shared types (`Session`, `Message`, `Binding`, `PushResult` and their literals)
   and `BELLHOP_FAKE_ROUTES`, which swaps every route for the JSON-configured fake route and every
-  transcript reader for the plain-file reader (tests only).
-- `paths`: XDG locations; a relative XDG value is refused.
+  transcript reader for the plain-file reader. It is a test seam: `wiring.fake_routes` honours it
+  only when the state dir is not the default `~/.local/state/bellhop`, and `doctor` reports it
+  ignored otherwise.
+- `paths`: XDG locations; a relative XDG value is refused. `default_state` compares resolved
+  paths against both `$HOME` and the account's home.
 - `jsonout`: the versioned JSON envelopes.
 - `hls`: runs `hooklinesinker sessions --json` and maps protocol 1 records to `Session`. It never
   reads hls state files. An hls that cannot answer is `HlsUnavailable` (exit 5), never an empty
@@ -50,7 +53,14 @@ extension and Claude's MCP config.
 - `config`, `runtime`: `config.toml` (agents) and the 0700 runtime directory for endpoint sockets.
 - `store`: the SQLite message and binding store (WAL, `BEGIN IMMEDIATE` writes, numbered
   migrations; schema 3 records the transcript file a message's offset was taken in). Only SQL runs
-  inside a write transaction.
+  inside a write transaction. It removes a planted `-wal` or `-shm` link before SQLite opens the
+  store.
+- `files` (layer 0): `open_private` (no symlink, no blocking, then refused unless a regular file of
+  the user's with one link), `read_private`, `write_private` (a fresh exclusive temporary file,
+  then `os.replace`) and `drop_planted`. bellhop writes `bellhop.sqlite`, `drain.lock`,
+  `drain.log`, `drain.status.json` and `codex-<agent>.log` through them; the launch and relay locks
+  are only locked. The drainer contacts only the tmux server `config.toml` names
+  (`tmux.configured_server`) and runs tmux from its own `PATH` or `tmux.SYSTEM_TMUX`.
 - `identity`, `targets`: the calling session (`whoami`) and target resolution; bindings follow
   their process.
 - `envelope`, `routes`, `transcripts`, `delivery`: the text a session receives, the `Route` and
@@ -71,7 +81,7 @@ extension and Claude's MCP config.
   WebSocket on the app server's unix socket (`codex_rpc`, layer 1): the binding's
   `app_server_socket` (recorded by `bind` from the binding session's `CODEX_HOME`, or by `launch`
   for the agent's own server), else `$CODEX_HOME/app-server-control/app-server-control.sock` (the
-  shared daemon; `CODEX_HOME` from a configured agent's `env` via `wiring.homes_env`), followed only to a
+  shared daemon; `CODEX_HOME` from a configured agent's `env`, else from the session's transcript path, via `wiring.homes_env`), followed only to a
   socket the user owns in a private directory. `now` steers a running turn (`turn/steer`, ADR
   0004); a thread waiting on an approval or a question is busy for every push. `transcripts/codex` finds the rollout by `rollout-*-<thread-id>.jsonl` under
   `$CODEX_HOME/sessions`, only in the thread's UUIDv7 creation day and the days either side. A Codex binding is keyed by its
@@ -111,7 +121,9 @@ extension and Claude's MCP config.
   messages, confirms sent ones and completes starts (`Deps.starts`, `launch.start_checker`; a
   start whose check keeps raising fails at its 90 s deadline; `store.abandon_starts` each tick).
   Its loop takes its clock, hls, routes, readers, process table and start check as arguments, and
-  one failing target never stops the others. It is spawned with `python -I` from
+  one failing target never stops the others. It keeps `drain.status.json` next to its lock (pid,
+  start, the hooklinesinker it resolved, whether its last call worked, its last error), which
+  `doctor` reads. It is spawned with `python -I` from
   `/`, without the caller's session-identity variables, and logs to `drain.log` (rotated at 1 MiB).
   `follow_bindings` updates bindings in one write transaction for the drainer and the CLI.
 - `cli`: `parsing`, `presentation`, `context` (lazy config, store, sessions, process table,
@@ -123,7 +135,8 @@ extension and Claude's MCP config.
   every command when the store has deliverable work (`store.DELIVERABLE`: messages to an agent without a
   live or starting binding are not), `send` and `bind` again after they add work; a failed start
   is a warning, never an error. Text output passes untrusted text through `escape_controls`.
-- `testing`: the live-smoke isolation helper (also used by callboard's smoke tests). `SmokeRun`
+- `testing`: the live-smoke isolation helper (also used by callboard's smoke tests); the package
+  exports `drainer_running`, a lock probe that imports nothing from the core. `SmokeRun`
   builds isolated homes under `.cache/smoke/<run>/`, installs an isolated hls consumer and hooks,
   launches Claude, Codex and Pi in prompting mode on `tmux -L bellhop-smoke` with a scrubbed
   environment, waits for readiness, and tears everything down.

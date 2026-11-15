@@ -1,3 +1,4 @@
+import contextlib
 import hashlib
 import os
 import signal
@@ -8,7 +9,14 @@ from pathlib import Path
 
 import pytest
 
-from bellhop.codex_session import parse, remove_socket, session_argv, stop, wait_for_socket
+from bellhop.codex_session import (
+    parse,
+    remove_socket,
+    server_log,
+    session_argv,
+    stop,
+    wait_for_socket,
+)
 
 SERVER = """
 import os, sys, time
@@ -25,6 +33,14 @@ time.sleep(60)
 def daemon_target(daemons: Path, link: Path) -> Path:
     name = hashlib.sha256(str(link.parent.resolve() / link.name).encode()).hexdigest()
     return daemons / f"codex-daemon-{os.getuid()}" / name
+
+
+READY_SECONDS = 60
+MARKING_TUI = """
+import sys, time
+open(sys.argv[1], "w").close()
+time.sleep(60)
+"""
 
 
 def gone(pid: int) -> bool:
@@ -89,13 +105,25 @@ def test_when_the_tui_exits_the_server_stops_and_its_socket_is_removed(tmp_path:
     assert (tmp_path / "state" / "bellhop" / "codex-nanna.log").exists() is True
 
 
-def test_a_hangup_stops_the_server_too(tmp_path: Path) -> None:
-    tui = [sys.executable, "-c", "import time; time.sleep(60)"]
-    argv, link, _, pidfile = wrapper(tmp_path, SERVER, tui)
-    process = subprocess.Popen(argv, env=env(tmp_path))
-    deadline = time.monotonic() + 10
-    while not link.is_symlink() and time.monotonic() < deadline:
+def started(marker: Path, process: subprocess.Popen[bytes]) -> bool:
+    deadline = time.monotonic() + READY_SECONDS
+    while not marker.exists() and process.poll() is None and time.monotonic() < deadline:
         time.sleep(0.05)
+    return marker.exists()
+
+
+def test_a_hangup_stops_the_server_too(tmp_path: Path) -> None:
+    marker = tmp_path / "tui-started"
+    tui = [sys.executable, "-c", MARKING_TUI, str(marker)]
+    argv, link, _, pidfile = wrapper(tmp_path, SERVER, tui)
+    process = subprocess.Popen(argv, env=env(tmp_path), process_group=0)
+    if not started(marker, process):
+        os.killpg(process.pid, signal.SIGKILL)
+        process.wait(10)
+        if pidfile.exists():
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(int(pidfile.read_text()), signal.SIGKILL)
+        pytest.fail("the wrapper never became ready")
 
     process.send_signal(signal.SIGHUP)
     code = process.wait(10)
@@ -191,3 +219,31 @@ def test_stopping_a_server_twice_never_signals_a_group_the_second_time(
     stop(server)
 
     assert (first[0], signalled) == (signal.SIGTERM, first)
+
+
+UMASK_TUI = """
+import os, sys
+mask = os.umask(0)
+open(sys.argv[1], "w").write(oct(mask))
+"""
+
+
+def test_the_server_and_tui_get_the_caller_s_umask_not_bellhop_s(tmp_path: Path) -> None:
+    seen = tmp_path / "umask"
+    argv, _, _, _ = wrapper(tmp_path, SERVER, [sys.executable, "-c", UMASK_TUI, str(seen)])
+
+    subprocess.run(argv, env=env(tmp_path), timeout=30, check=False, umask=0o022)
+
+    assert seen.read_text() == "0o22"
+
+
+def test_the_server_log_replaces_a_planted_link_and_leaves_its_target(tmp_path: Path) -> None:
+    target = tmp_path / "zshrc"
+    target.write_text("mine\n")
+    log = tmp_path / "state" / "codex-nanna.log"
+    log.parent.mkdir()
+    log.symlink_to(target)
+
+    os.close(server_log(log))
+
+    assert (target.read_text(), log.is_symlink()) == ("mine\n", False)

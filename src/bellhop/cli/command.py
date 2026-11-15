@@ -15,16 +15,18 @@ def _report(error: BellhopError, argv: Sequence[str]) -> int:
         print_json(error_payload(error))
     else:
         print_diagnostic(str(error))
+        for candidate in error.candidates or []:
+            print_diagnostic(f"  {candidate}")
     return error.exit_code
 
 
-def _main(argv: Sequence[str]) -> int:
+def _main(argv: Sequence[str], caller_umask: int) -> int:
     try:
         args = parse(argv)
         if args.version:
             print(f"bellhop {bellhop_version()}")
             return 0
-        return run(args, os.environ)
+        return run(args, os.environ, caller_umask)
     except BellhopError as error:
         return _report(error, argv)
     except KeyboardInterrupt:
@@ -36,9 +38,9 @@ def _main(argv: Sequence[str]) -> int:
         return _report(BellhopError(message, code=INTERNAL_ERROR), argv)
 
 
-def run_command(arguments: Sequence[str]) -> int:
+def run_command(arguments: Sequence[str], caller_umask: int) -> int:
     try:
-        exit_code = _main(arguments)
+        exit_code = _main(arguments, caller_umask)
         sys.stdout.flush()
     except BrokenPipeError:
         silence_stdout()

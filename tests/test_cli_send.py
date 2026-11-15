@@ -15,7 +15,7 @@ import pytest
 
 from bellhop.cli import main
 from bellhop.routes.endpoint import PING_SECONDS
-from bellhop.store import Push, claim, connect
+from bellhop.store import Push, claim, connect, insert_message
 from conftest import (
     ALPHA,
     BETA,
@@ -23,6 +23,7 @@ from conftest import (
     Bell,
     FakeHls,
     check_golden,
+    make_message,
     payload_message,
     pong_line,
     pong_server,
@@ -171,12 +172,12 @@ def test_or_hold_with_no_route_stores_a_hold(bell: Bell) -> None:
     check_golden("send-held", payload)
 
 
-def test_a_direct_push_never_overtakes_an_older_pending_message(bell: Bell) -> None:
+def test_a_direct_push_never_overtakes_an_older_pending_message_of_its_urgency(bell: Bell) -> None:
     bell.route(ALPHA, outcomes=["busy", "accepted", "accepted"])
     _, first = bell.run("send", ALPHA, "first", "--from", "enki")
     assert payload_message(first)["state"] == "pending"
 
-    _, second = bell.run("send", ALPHA, "second", "--urgency", "now", "--from", "enki")
+    _, second = bell.run("send", ALPHA, "second", "--from", "enki")
 
     assert payload_message(second)["state"] == "pending"
     assert [push["text"].split("] ")[1] for push in bell.pushes()] == ["first"]
@@ -636,3 +637,162 @@ def test_an_idle_send_to_a_working_claude_goes_out_at_once_as_a_boundary_frame(
     sent = json.loads(capsys.readouterr().out)["message"]
     assert (code, sent["state"], sent["detail"]) == (0, "sent", "later")
     assert received[-1].split(b"\n", 1)[0].startswith(b"deliver boundary c1 ")
+
+
+@pytest.mark.parametrize("urgency", ["now", "idle", "hold"])
+def test_a_body_with_a_nul_is_refused_before_anything_is_stored(bell: Bell, urgency: str) -> None:
+    code, payload = bell.run("send", ALPHA, "--urgency", urgency, stdin="a\x00b")
+
+    assert (code, payload["error"]["code"], bell.stored()) == (2, "usage", [])
+
+
+def test_a_send_to_a_configured_agent_that_is_not_running_says_it_waits(bell: Bell) -> None:
+    config = bell.tmp / "config-home" / "bellhop" / "config.toml"
+    config.parent.mkdir(parents=True)
+    config.write_text("[agents.nanna]\nharness = 'codex'\ncommand = ['/opt/codex']\n")
+
+    code, payload = bell.run("send", "nanna", "later", "--from", "enki")
+
+    assert (code, payload_message(payload)["state"], payload["warnings"]) == (
+        0,
+        "pending",
+        ["'nanna' is not running; the message waits (use --wake to start it)"],
+    )
+    check_golden("send-not-running", payload)
+
+
+def test_a_replay_of_a_message_that_failed_at_its_start_is_launch_failed(bell: Bell) -> None:
+    conn = connect(bell.tmp / "state-home" / "bellhop" / "bellhop.sqlite")
+    insert_message(
+        conn,
+        make_message(
+            1,
+            key="k-start",
+            target_kind="agent",
+            target="nanna",
+            state="failed",
+            detail="start failed: stopped at the hooks-review screen",
+        ),
+    )
+    conn.close()
+
+    code, payload = bell.run("send", "nanna", "x", "--key", "k-start")
+
+    assert (code, payload["error"]["code"], payload_message(payload)["id"]) == (
+        1,
+        "launch_failed",
+        "bh_000000000001",
+    )
+
+
+def test_now_is_pushed_at_once_past_a_waiting_idle_message(bell: Bell) -> None:
+    bell.route(BETA, queues_until_idle=False, busy=True)
+    bell.run("send", BETA, "later", "--from", "enki")
+
+    code, payload = bell.run("send", BETA, "urgent", "--urgency", "now", "--from", "enki")
+
+    assert (code, payload_message(payload)["state"], payload["warnings"]) == (0, "sent", [])
+    assert [(p["text"].split("] ")[1], p["interrupt"]) for p in bell.pushes()] == [("urgent", True)]
+
+
+def test_a_now_that_waits_says_why(bell: Bell) -> None:
+    bell.route(BETA, outcomes=["busy"])
+    _, first = bell.run("send", BETA, "urgent", "--urgency", "now", "--from", "enki")
+
+    _, second = bell.run("send", BETA, "more urgent", "--urgency", "now", "--from", "enki")
+
+    assert (payload_message(first)["state"], payload_message(second)["state"]) == (
+        "pending",
+        "pending",
+    )
+    assert first["warnings"][0].startswith("the now message waits: ")
+    assert second["warnings"] == [
+        "the now message waits: behind an older now message to the same session"
+    ]
+
+
+def test_invalid_utf8_on_stdin_is_usage(bell: Bell, monkeypatch: pytest.MonkeyPatch) -> None:
+    raw = io.TextIOWrapper(io.BytesIO(b"\xff\xfe bad"), encoding="utf-8")
+    monkeypatch.setattr("bellhop.cli.messages.sys.stdin", raw)
+
+    code = main(["send", ALPHA, "--json"])
+
+    payload = json.loads(bell.capsys.readouterr().out)
+    assert (code, payload["error"]["message"]) == (2, "stdin is not valid UTF-8 text")
+
+
+def test_a_crlf_body_arrives_with_plain_newlines(bell: Bell) -> None:
+    bell.run("send", ALPHA, "--from", "enki", stdin="one\r\ntwo")
+
+    assert bell.pushes()[0]["text"].endswith("] one\ntwo")
+
+
+def test_a_body_that_starts_with_a_dash_hints_at_the_separator(bell: Bell) -> None:
+    code, payload = bell.run("send", ALPHA, "-x")
+
+    assert (code, payload["error"]["message"]) == (
+        2,
+        "unrecognized arguments: -x; put -- before a message that starts with '-'",
+    )
+
+
+def test_an_empty_key_is_usage(bell: Bell) -> None:
+    code, payload = bell.run("send", ALPHA, "x", "--key", "")
+
+    assert (code, payload["error"]["code"], bell.stored()) == (2, "usage", [])
+
+
+def test_a_key_reused_for_another_target_returns_the_stored_message_and_says_so(
+    bell: Bell,
+) -> None:
+    _, first = bell.run("send", ALPHA, "one", "--key", "k1", "--from", "enki")
+
+    _, again = bell.run("send", BETA, "two", "--key", "k1", "--from", "enki")
+    _, same = bell.run("send", ALPHA, "one", "--key", "k1", "--from", "enki")
+
+    stored_id = payload_message(first)["id"]
+    assert (payload_message(again)["id"], payload_message(same)["id"]) == (stored_id, stored_id)
+    assert again["warnings"] == [
+        f"key 'k1' is already stored for {stored_id} with another target or text"
+    ]
+    assert same["warnings"] == []
+
+
+def test_a_text_mode_target_error_lists_the_candidates(
+    bell: Bell, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sys, "stdin", io.StringIO(""))
+
+    code = main(["send", "dup", "x"])
+
+    err = bell.capsys.readouterr().err.splitlines()
+    assert code == 3
+    assert err[0] == "bellhop: 'dup' is the title of 2 live sessions; use a longer id"
+    assert [line.endswith(", dup)") for line in err[1:]] == [True, True]
+
+
+def test_a_mistyped_option_gets_no_separator_hint(bell: Bell) -> None:
+    code, payload = bell.run("send", ALPHA, "hi", "--urgnecy", "now")
+
+    assert (code, payload["error"]["message"]) == (
+        2,
+        "unrecognized arguments: --urgnecy now",
+    )
+
+
+def test_a_sender_name_with_a_control_character_is_usage(bell: Bell) -> None:
+    code, payload = bell.run("send", ALPHA, "hi", "--from", "x\u009b2J")
+
+    assert (code, payload["error"]["message"], bell.stored()) == (
+        2,
+        "--from contains the control character U+009B; only tab and newline are allowed",
+        [],
+    )
+
+
+def test_a_bad_sender_is_refused_on_a_key_replay_too(bell: Bell) -> None:
+    bell.run("send", ALPHA, "one", "--key", "k1", "--from", "enki")
+
+    code, payload = bell.run("send", ALPHA, "one", "--key", "k1", "--from", "x\x1b")
+
+    assert (code, payload["error"]["code"]) == (2, "usage")

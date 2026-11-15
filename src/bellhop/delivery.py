@@ -12,7 +12,7 @@ from bellhop.store import (
     claim,
     confirm,
     get_message,
-    holds_waiting,
+    holds_for_session,
     record_outcome,
     set_degraded,
 )
@@ -89,7 +89,7 @@ def push(
     transcript = reader.path(session) if reader is not None and offset is not None else None
     if not claim(conn, message.id, Push(session.session_id, route.name, offset, transcript), now):
         return get_message(conn, message.id)
-    waiting = holds_waiting(conn, message.target_kind, message.target)
+    waiting = holds_for_session(conn, session.session_id)
     text = render(message.id, message.sender, message.body, waiting)
     try:
         result = route.push(session, text, interrupt=interrupt)

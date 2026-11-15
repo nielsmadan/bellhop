@@ -6,12 +6,15 @@ from pathlib import Path
 import pytest
 from smoke_helpers import (
     CONFIRM,
+    TOOL_START_SECONDS,
     Cell,
     NotBusy,
     bellhop,
+    busy_tries,
     harness_rows,
     jsonl_records,
     message,
+    placement,
     run_named,
     smoke_run,
     submit_until,
@@ -53,6 +56,22 @@ def test_bellhop_delivers_into_a_real_pi_and_confirms_from_its_transcript() -> N
     )
     assert run.leftovers == []
     assert not run.layout.runtime_dir.exists()
+
+
+def ran_sleep(record: Mapping[str, object]) -> bool:
+    body = record.get("message")
+    content = body.get("content") if isinstance(body, dict) else None
+    parts = content if isinstance(content, list) else []
+    return any(
+        isinstance(part, dict) and part.get("type") == "toolCall" and "sleep" in json.dumps(part)
+        for part in parts
+    )
+
+
+def ends_turn(record: Mapping[str, object]) -> bool:
+    body = record.get("message")
+    stop = body.get("stopReason") if isinstance(body, dict) else None
+    return role(record) == "assistant" and stop not in ("toolUse", "pending", "deferred")
 
 
 class PiCells:
@@ -120,8 +139,15 @@ class PiCells:
             )
         )
 
-    def answered_at(self, done: str) -> tuple[Path, int] | None:
-        return self.position(lambda r: role(r) == "assistant" and f"DONE {done}" in text_of(r))
+    def tool_started(self, done: str) -> bool:
+        asked = self.index(lambda r: role(r) == "user" and f"DONE {done}" in text_of(r))
+        return asked is not None and self.index(ran_sleep, asked) is not None
+
+    def index(
+        self, predicate: Callable[[Mapping[str, object]], bool], after: int = -1
+    ) -> int | None:
+        found = records(self.run.layout.pi_dir)
+        return next((i for i, (_, _, r) in enumerate(found) if i > after and predicate(r)), None)
 
     def idle_to_idle(self) -> dict[str, object]:
         self.idle()
@@ -135,19 +161,29 @@ class PiCells:
         self.idle()
         done = token()
         busy = self.busy_with(done)
+        wait_for(lambda: self.tool_started(done), TOOL_START_SECONDS, 0.5)
         tok = token()
         code, state = self.ack(tok, *args)
         self.idle()
-        landed, answered = self.delivered_at(tok), self.answered_at(done)
-        return {
-            "code": code,
-            "state": state,
-            "busy_at_send": busy,
-            "boundary": landed is not None and answered is not None and landed[1] > answered[1],
-            "mid_turn": landed is not None and (answered is None or landed[1] < answered[1]),
-        }
+        asked = self.index(lambda r: role(r) == "user" and f"DONE {done}" in text_of(r))
+        after = -1 if asked is None else asked
+        landed = self.index(
+            lambda r: (
+                role(r) == "user"
+                and text_of(r).lstrip().startswith("[bellhop")
+                and tok in text_of(r)
+            )
+        )
+        found = placement(asked, self.index(ran_sleep, after), landed, self.index(ends_turn, after))
+        return {"code": code, "state": state, "busy_at_send": busy, **found}
 
     def idle_to_working(self) -> dict[str, object]:
+        return busy_tries(self.idle_to_working_once)
+
+    def now_to_working(self) -> dict[str, object]:
+        return busy_tries(self.now_to_working_once)
+
+    def idle_to_working_once(self) -> dict[str, object]:
         found = self.to_working()
         ok = (
             found["code"] == 0
@@ -157,7 +193,7 @@ class PiCells:
         )
         return {"ok": ok, **found}
 
-    def now_to_working(self) -> dict[str, object]:
+    def now_to_working_once(self) -> dict[str, object]:
         found = self.to_working("--urgency", "now")
         ok = (
             found["code"] == 0

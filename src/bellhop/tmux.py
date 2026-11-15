@@ -13,6 +13,8 @@ from bellhop.errors import BellhopError
 TMUX_SECONDS = 5.0
 WIDTH, HEIGHT = 200, 50
 NAME_TRIES = 9
+SYSTEM_TMUX = ("/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/bin/tmux")
+NO_SERVER = ("no server running", "(No such file or directory)")
 CLIENT_ENV = frozenset(
     {"PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "TMPDIR", "TERM", "TMUX_TMPDIR"}
 )
@@ -34,6 +36,17 @@ def server_args(socket: str) -> list[str]:
     if not socket:
         return []
     return ["-S", socket] if "/" in socket else ["-L", socket]
+
+
+def server_path(env: Mapping[str, str], socket: str) -> Path:
+    if "/" in socket:
+        return Path(socket)
+    base = Path(env.get("TMUX_TMPDIR") or "/tmp") / f"tmux-{os.getuid()}"  # noqa: S108
+    return base / (socket or "default")
+
+
+def configured_server(env: Mapping[str, str], configured: str, socket: str) -> bool:
+    return server_path(env, socket).resolve() == server_path(env, configured).resolve()
 
 
 def tmux_target(place: Place) -> str:
@@ -74,6 +87,7 @@ def place_of(name: str, line: str) -> Place | None:
 class Tmux:
     socket: str = ""
     executable: str = "tmux"
+    umask: int = -1
 
     def server(self) -> list[str]:
         return server_args(self.socket)
@@ -88,12 +102,13 @@ class Tmux:
                 check=False,
                 stdin=subprocess.DEVNULL,
                 env=client_env(os.environ),
+                umask=self.umask,
             )
         except subprocess.TimeoutExpired as error:
             raise TmuxTimeout(
                 f"tmux {args[0]} gave no answer within {TMUX_SECONDS:g}s", code=LAUNCH_FAILED
             ) from error
-        except (OSError, subprocess.SubprocessError) as error:
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
             raise BellhopError(f"tmux did not run: {error}", code=LAUNCH_FAILED) from error
 
     def run(self, *args: str) -> str:
@@ -105,7 +120,11 @@ class Tmux:
 
     def session_names(self) -> set[str]:
         done = self._run("list-sessions", "-F", "#{session_name}")
-        return set(done.stdout.split()) if done.returncode == 0 else set()
+        if done.returncode == 0:
+            return set(done.stdout.split())
+        if any(sign in done.stderr for sign in NO_SERVER) or not done.stderr.strip():
+            return set()
+        raise BellhopError(f"tmux list-sessions failed: {done.stderr.strip()}", code=LAUNCH_FAILED)
 
     def free_name(self, base: str) -> str:
         names = [base, *(f"{base}-{n}" for n in range(2, NAME_TRIES + 1))]
@@ -157,8 +176,9 @@ class Tmux:
 
 
 def tmux_executable(env: Mapping[str, str]) -> str | None:
-    return shutil.which("tmux", path=env.get("PATH", ""))
+    found = shutil.which("tmux", path=env.get("PATH", ""))
+    return found or next((p for p in SYSTEM_TMUX if os.access(p, os.X_OK)), None)
 
 
-def tmux_for(env: Mapping[str, str], socket: str) -> Tmux:
-    return Tmux(socket, tmux_executable(env) or "tmux")
+def tmux_for(env: Mapping[str, str], socket: str, *, umask: int = -1) -> Tmux:
+    return Tmux(socket, tmux_executable(env) or "tmux", umask)

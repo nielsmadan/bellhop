@@ -7,7 +7,7 @@
 ## Context
 
 ADR 0001 gave an hls call "5 s with one retry". Read as 5 s per attempt, an hls call alone could
-spend 10 s, all of `bellhop send`'s budget. The first fix (B-4) split one 5 s budget evenly, which
+spend 10 s, all of `bellhop send`'s budget. The first fix split one 5 s budget evenly, which
 made an hls that answers in 2.5–5 s fail both attempts where it used to succeed.
 
 ## Decision

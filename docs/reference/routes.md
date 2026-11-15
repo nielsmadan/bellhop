@@ -1,6 +1,6 @@
 # Delivery routes: measurements
 
-Measured on 2026-11-13/14 on the development Mac (macOS 27.2) by the Task B2 spike. The decision
+Measured on 2026-11-13/14 on the development Mac (macOS 27.2) by a spike. The decision
 built on these numbers is [ADR 0002](../decisions/0002-delivery-routes.md). The spike code is in
 [`spikes/`](../../spikes/) and every raw record is in `spikes/results/` (`measure-main.jsonl`, plus
 `measure-pi-fill.jsonl` for one Pi session re-run after a driver bug).
@@ -138,9 +138,9 @@ file exists), the extension's report, then the per-cwd directory under `PI_CODIN
 - Codex S3b is **not measured**, not `n/a`: asked to use `request_user_input`, Codex 0.167.1 in its
   default mode opened no question dialog, and plan or collaboration mode, where Codex exposes that
   tool, was not tried. A cell that was not measured is not a pass, so no Codex candidate clears the
-  S3b gate and Codex `now` is degraded to `idle` until Task B5 measures it (ADR 0002). Pi has no
+  S3b gate and Codex `now` was degraded to `idle` until it was measured (ADR 0002). Pi has no
   permission prompts (S3) and no question dialog (S3b), so those are `n/a`.
-- ‡ Task B5 measured S3b through bellhop's own Codex route: 3/3 safe, with
+- ‡ S3b was measured on 2026-11-14 through bellhop's own Codex route: 3/3 safe, with
   `default_mode_request_user_input` enabled in an isolated `CODEX_HOME`, and a `now` push during an
   open approval prompt (S3) left the prompt open. Codex `now` is `turn/steer` since
   [ADR 0004](../decisions/0004-codex-now.md).
@@ -148,7 +148,7 @@ file exists), the extension's report, then the per-cwd directory under `PI_CODIN
   (3 of 3); Claude finished every interrupted turn (12 of 12).
 - Codex S10 fails on every route; see Known limits.
 
-## Answers to the plan's questions
+## Answers to the design questions
 
 ### 1. Claude inside piece
 
@@ -158,7 +158,7 @@ file exists), the extension's report, then the per-cwd directory under `PI_CODIN
   `priority: "later"` it waits for the turn boundary (S2-boundary 3/3 boundary). Not measured: the
   spike gave every relay a fixed socket name, so the planned `<runtime_dir>/claude-<pid>.sock`
   naming, and whether the relay's parent is the Claude pid hls reports under the user's launch
-  wrapper, are left to Task B6.
+  wrapper, were measured later ("Claude relay, as built" below).
 - (b) **The same relay started elsewhere.** Spawned by a mod through `$.process.spawn`, the child
   also gets both variables (`$.process.spawn` passes the host environment). Started by a
   `SessionStart` command hook, the child gets both too, and the hook must detach it; the detached
@@ -198,14 +198,14 @@ file exists), the extension's report, then the per-cwd directory under `PI_CODIN
   lives, and cleanup must follow the link. Three such sockets from the measurement run were left in
   that directory and removed afterwards by matching exactly those hashes.
 
-- **S3b, measured in Task B5** with `default_mode_request_user_input` enabled in an isolated
+- **S3b, measured on 2026-11-14** with `default_mode_request_user_input` enabled in an isolated
   `CODEX_HOME`: the `request_user_input` dialog stayed open and unanswered after a mid-turn
   `turn/steer`, 3/3 ([ADR 0004](../decisions/0004-codex-now.md)).
 - A Codex session is listed by hooklinesinker only after its first turn. The control socket link
   under a long `CODEX_HOME` path can exceed the 104-byte socket limit; bellhop connects through
   the link's resolved target, and only when that target is a socket owned by the user in a
   directory nobody else can write to.
-- bellhop's Codex route, as built in B5: `send` asks the app server once (`thread/loaded/list`,
+- bellhop's Codex route, as built: `send` asks the app server once (`thread/loaded/list`,
   then `thread/read` and, for an active thread, `thread/turns/list`) and pushes on a second
   connection. An idle thread gets `turn/start`; a running turn gets `turn/steer` with its
   `expectedTurnId` for a `now` message and `busy` otherwise; a thread that is active with no turn
@@ -227,14 +227,17 @@ file exists), the extension's report, then the per-cwd directory under `PI_CODIN
 - `bind` from a Codex session records `$CODEX_HOME/app-server-control/app-server-control.sock`
   from the binding session's own environment, so a sender with another `CODEX_HOME` still reaches
   that agent. For any other binding of an agent in `config.toml`, the agent's `env` decides
-  (`CODEX_HOME`, else `~/.codex` under `HOME`), whatever the sender's environment says (B-7);
-  session targets and agents only bound use the sender's `CODEX_HOME` (default `~/.codex`).
+  (`CODEX_HOME`, else `~/.codex` under `HOME`), whatever the sender's environment says;
+  session targets and agents only bound take it from the session's transcript path as
+  hooklinesinker reports it (`<CODEX_HOME>/sessions/…`; Pi's `<PI_CODING_AGENT_DIR>/sessions/…`
+  likewise), so the drainer uses the session's own home whatever it was started with; only
+  without a transcript path does it fall back to its own `CODEX_HOME` (default `~/.codex`).
 - hls 1.5.1 reports `process: null` for a thread on the shared daemon (not the daemon's pid as
-  B-2's table says for the research harness) and stops listing the daemon's threads when the
+  the spike's table says for the research harness) and stops listing the daemon's threads when the
   daemon restarts; it lists a thread again after its next turn. A Codex binding therefore fails
   ("thread no longer listed") when hls drops the thread or the app-server pid hls reports is gone,
   and comes back to `live` when hls lists the same thread again with a live (or no) pid. Measured
-  in B5 with `codex app-server daemon restart` on an isolated daemon: the TUI kept working, the
+  on 2026-11-14 with `codex app-server daemon restart` on an isolated daemon: the TUI kept working, the
   binding failed, went `live` after one turn, and a message to the agent was confirmed.
 
 ### 3. Pi
@@ -269,7 +272,7 @@ trusted isolated home (the smoke test launches all three this way). Startup dial
 Claude's `--mcp-config` takes a list of values and swallowed a trailing prompt as a second config
 file; end the list (another flag, or `--`) before the prompt.
 
-### Claude relay, as built in Task B6
+### Claude relay, as built
 
 Measured on an isolated Claude launched through `sops exec-env` (the user's wrapper), with a probe
 relay and then bellhop's own:
@@ -280,8 +283,7 @@ relay and then bellhop's own:
   further up (up to four levels, one `ps -A` read) only when that ancestor's entry names the
   session the relay started in (`CLAUDE_CODE_SESSION_ID`), so a Claude started from inside
   another Claude's shell never claims the outer Claude's socket. It first waits up to 10 s for its
-  parent's entry, which Claude writes late, then looks at the ancestors once, then uses its parent
-  (B-6f).
+  parent's entry, which Claude writes late, then looks at the ancestors once, then uses its parent.
 - **What the relay knows.** `CLAUDE_CODE_SESSION_ID` in the relay's environment stays the id the
   session started with. The parent's registry entry follows the session: `sessionId` changed on
   `/clear` (the relay was not restarted) and stayed the same across `/compact`. The relay reads
@@ -309,11 +311,11 @@ relay and then bellhop's own:
   and the same `error …` replies as the Pi extension, with `error session_mismatch unknown` when
   the registry names no session. A request gets 5 s in total and 64 KB; more is dropped with no
   reply. At most 16 requests are handled at once, and a caller beyond that gets
-  `busy relay is at capacity` at once (B-6f). An
+  `busy relay is at capacity` at once. An
   `accept` error never stops the relay serving.
 - **Reader path order.** The Claude reader uses hls's `transcriptPath` when it names a file, then
   the file it found before for that session (while it exists), then the path the relay reports.
-- **Measured in B-6f:** a child of Claude's Bash tool inherits `CLAUDE_CODE_MESSAGING_SOCKET` and
+- **Measured on 2026-11-14:** a child of Claude's Bash tool inherits `CLAUDE_CODE_MESSAGING_SOCKET` and
   `CLAUDE_CODE_MESSAGING_TOKEN`, and the socket is named after the owning Claude's pid; the relay
   refuses a channel not named after the Claude it chose (ADR 0005). A body of 8000 three-byte
   characters is delivered and confirmed whole. A relay at its 16-request cap answers
@@ -331,7 +333,7 @@ relay and then bellhop's own:
 
 - **After a Codex TUI quits, its thread stays loaded in the daemon and listed by hls**, and a message
   to it runs as a turn with no TUI attached; a session target hls has dropped can wait for the
-  24 h expiry while the daemon lives on. Measured in Task B-5f on an isolated daemon (Codex 0.167.1, hls 1.5.1):
+  24 h expiry while the daemon lives on. Measured on 2026-11-14 on an isolated daemon (Codex 0.167.1, hls 1.5.1):
   after a TUI quit, the daemon kept its thread loaded and hls kept listing it (`idle`), so a
   message to it is delivered into the daemon and runs as a turn with no TUI attached; after a
   daemon restart, `thread/loaded/list` still listed every thread (the quit one too) while hls

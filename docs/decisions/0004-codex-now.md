@@ -9,9 +9,10 @@
 ADR 0002 degraded Codex `now` to `idle` because S3b (a question dialog open while the push
 arrives) could not be measured: in its default mode Codex opened no dialog. Codex 0.167.1 has an
 under-development feature, `default_mode_request_user_input`, that lets `request_user_input` open
-its question dialog in the default mode. Task B5 enabled it in an isolated smoke `CODEX_HOME` only.
+its question dialog in the default mode. The measurement enabled it in an isolated smoke
+`CODEX_HOME` only.
 
-## Measurement (Task B5, 2026-11-14)
+## Measurement (2026-11-14)
 
 Codex 0.167.1 attached to an isolated daemon, model and effort as in the smoke helper, three
 repetitions. Each repetition asked Codex to call `request_user_input` with the options Red and
@@ -25,7 +26,7 @@ Blue, waited for the dialog (`Question 1/1 (1 unanswered)`, `1. Red`, `2. Blue`)
 | 3 | accepted | yes | no |
 
 S3 (a command-approval prompt open) passed in ADR 0002's spike and again through bellhop in the
-B5 smoke: the prompt stayed open, the command did not run, and the message waited.
+smoke run of 2026-11-14: the prompt stayed open, the command did not run, and the message waited.
 
 ## Decision
 
@@ -35,7 +36,7 @@ Codex route reports `can_interrupt`, so a Codex `now` message is no longer `degr
 
 A thread whose status carries `waitingOnApproval` or `waitingOnUserInput` (an approval prompt or a
 question dialog is open) is `busy` for every push, `now` included. The steer itself was safe, but
-the B5 smoke run `20261114-120726-d991` showed Codex drops a queued steer when the user then
+the smoke run `20261114-120726-d991` showed Codex drops a queued steer when the user then
 interrupts the turn: in the `s3-now` cell and in both S3b repetitions that opened a dialog, the
 steer was accepted, the dialog was escaped (`turn_aborted`), and the steered text never reached the
 rollout, so the message stayed `sent` and unconfirmed. Waiting until the dialog closes delivers it
@@ -52,6 +53,6 @@ either way: by `turn/steer` if the turn goes on, by `turn/start` once the thread
   - (a) A dialog opens between the read and a `turn/steer`. The steer is queued behind it, and if
     the user escapes the dialog Codex drops it: the message stays `sent` and is never confirmed.
   - (b) The user starts a turn between an idle read and `turn/start`. Codex 0.167.1 accepts that
-    `turn/start` and answers with the running turn's id (measured in Task B-5f on an isolated
+    `turn/start` and answers with the running turn's id (measured on 2026-11-14 on an isolated
     daemon): the text joins the running turn as a steer would, so an `idle` message can land
     mid-turn. There is no refusal to map to `busy`.

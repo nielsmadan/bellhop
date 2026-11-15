@@ -13,16 +13,18 @@ from bellhop.cli.presentation import (
     print_lines,
     print_warnings,
 )
-from bellhop.cli.waking import wake
-from bellhop.codes import INTERNAL_ERROR, INTERRUPTED, NO_ROUTE, PUSH_REJECTED, USAGE
+from bellhop.cli.waking import key_reused, replay_warnings, wake
+from bellhop.codes import INTERNAL_ERROR, INTERRUPTED, LAUNCH_FAILED, NO_ROUTE, PUSH_REJECTED, USAGE
 from bellhop.delivery import Channel, confirm_if_seen, new_id, plan_send, push
-from bellhop.envelope import BODY_LIMIT, check_body, clean_sender, render
+from bellhop.envelope import BODY_LIMIT, check_body, check_controls, clean_sender, render
 from bellhop.errors import BellhopError
 from bellhop.identity import whoami
 from bellhop.jsonout import message_object, ok_payload
+from bellhop.launch import START_FAILED
 from bellhop.models import Message, Session, TargetKind, Urgency
 from bellhop.routes import Route
 from bellhop.store import (
+    ABANDONED_DETAIL,
     EXPIRED_DETAIL,
     GONE_DETAIL,
     REPLACED_DETAIL,
@@ -34,7 +36,14 @@ from bellhop.store import (
     set_degraded,
     take_inbox,
 )
-from bellhop.targets import Target, agent_of, binding_for, live_session, resolve
+from bellhop.targets import (
+    PREFIX_MINIMUM,
+    Target,
+    agent_of,
+    binding_for,
+    live_session,
+    resolve,
+)
 
 CONFIRM_POLL_SECONDS = 0.2
 NEVER_PUSHED = frozenset({EXPIRED_DETAIL, GONE_DETAIL, REPLACED_DETAIL})
@@ -127,7 +136,7 @@ def deliver(stored: Message, target: Target, delivery: Delivery, ctx: Context) -
     session, route = delivery.session, delivery.route
     if session is None or route is None or stored.urgency == "hold":
         return stored
-    older = older_pending(ctx.conn, addresses(target, session), stored.seq)
+    older = older_pending(ctx.conn, addresses(target, session), stored.seq, stored.urgency)
     plan = plan_send(stored.urgency, route, session, older_pending=older)
     if plan.degraded_from:
         stored = set_degraded(ctx.conn, stored.id, plan.degraded_from)
@@ -156,6 +165,10 @@ def wait_for_confirmation(
 
 
 def emit_message(stored: Message, args: argparse.Namespace, ctx: Context) -> int:
+    if stored.state == "failed" and failed_start_detail(stored.detail):
+        raise BellhopError(
+            f"the start for {stored.id} failed: {stored.detail}", code=LAUNCH_FAILED, stored=stored
+        )
     if stored.state == "failed" and stored.detail not in NEVER_PUSHED:
         raise BellhopError(
             f"the receiver rejected {stored.id}: {stored.detail or 'no detail'}",
@@ -170,21 +183,36 @@ def emit_message(stored: Message, args: argparse.Namespace, ctx: Context) -> int
     return 0
 
 
+def failed_start_detail(detail: str | None) -> bool:
+    return (detail or "").startswith((START_FAILED, ABANDONED_DETAIL))
+
+
 def message_line(message: Message) -> str:
     detail = f" ({escape_controls(message.detail)})" if message.detail else ""
     degraded = f" degraded from {message.degraded_from}" if message.degraded_from else ""
     return f"{message.id} {message.state}{degraded} -> {escape_controls(message.target)}{detail}"
 
 
+def explicit_sender(args: argparse.Namespace) -> str | None:
+    return check_controls(args.sender, "--from") if args.sender is not None else None
+
+
+def normal_body(text: str) -> str:
+    return text.replace("\r\n", "\n")
+
+
 def read_body(args: argparse.Namespace) -> str:
     if args.text is not None:
-        return check_body(args.text)
-    text = sys.stdin.read(BODY_LIMIT + 1)
+        return check_body(normal_body(args.text))
+    try:
+        text = sys.stdin.read(BODY_LIMIT + 1)
+    except UnicodeDecodeError as error:
+        raise BellhopError("stdin is not valid UTF-8 text", code=USAGE) from error
     if len(text) > BODY_LIMIT:
         raise BellhopError(
             f"message body on stdin is over the limit of {BODY_LIMIT} characters", code=USAGE
         )
-    return check_body(text)
+    return check_body(normal_body(text))
 
 
 def latest(ctx: Context, stored: Message) -> Message:
@@ -213,18 +241,28 @@ def finish(
     return stored
 
 
+def asked_for(stored: Message, target_text: str, body: str) -> bool:
+    named = target_text in (stored.target, stored.title) or (
+        len(target_text) >= PREFIX_MINIMUM and stored.target.startswith(target_text)
+    )
+    return named and stored.body == body
+
+
 def unrouted(urgency: Urgency) -> Delivery:
     return Delivery(None, None, urgency, None)
 
 
 def send(args: argparse.Namespace, ctx: Context) -> int:
     body = read_body(args)
+    explicit = explicit_sender(args)
     if args.key is not None:
         existing = find_by_key(ctx.conn, args.key)
         if existing is not None:
+            if not asked_for(existing, args.target, body):
+                ctx.warnings.append(key_reused(args.key, existing))
             return emit_message(existing, args, ctx)
     target = resolve(args.target, ctx.sessions.sessions, ctx.config, ctx.bindings)
-    sender = clean_sender(args.sender or default_sender(ctx))
+    sender = clean_sender(explicit or default_sender(ctx))
     draft = Draft(body, sender, args.key, bool(args.wake))
     if args.wake and wakeable(target, args.urgency):
         unsent = build(target, unrouted(args.urgency), draft, new_id(), ctx.now())
@@ -237,7 +275,34 @@ def send(args: argparse.Namespace, ctx: Context) -> int:
     sent = send_message(
         target, draft, args.urgency, ctx, or_hold=args.or_hold, confirm=args.confirm
     )
+    if waits_for_agent(target, sent, ctx) and not args.wake:
+        ctx.warnings.append(
+            f"'{target.agent}' is not running; the message waits (use --wake to start it)"
+        )
+    elif now_waits(target, sent):
+        reason = sent.detail or "behind an older now message to the same session"
+        ctx.warnings.append(f"the now message waits: {reason}")
     return emit_message(sent, args, ctx)
+
+
+def now_waits(target: Target, sent: Message) -> bool:
+    return (
+        target.session is not None
+        and sent.urgency == "now"
+        and sent.state == "pending"
+        and sent.degraded_from is None
+    )
+
+
+def waits_for_agent(target: Target, sent: Message, ctx: Context) -> bool:
+    return (
+        target.kind == "agent"
+        and target.session is None
+        and target.agent in ctx.config.agents
+        and not any(b.agent == target.agent and b.state == "starting" for b in ctx.bindings)
+        and sent.urgency != "hold"
+        and sent.state == "pending"
+    )
 
 
 def wakeable(target: Target, urgency: Urgency) -> bool:
@@ -257,12 +322,31 @@ def send_message(
     message = build(target, delivery, draft, new_id(), ctx.now())
     stored = insert_message(ctx.conn, message)
     if stored.id != message.id:
+        ctx.warnings += replay_warnings(message, stored)
         return stored
     return finish(stored, target, delivery, confirm, ctx)
 
 
+def recheck(message: Message, ctx: Context) -> Message:
+    if message.state != "sent" or message.transcript_offset is None:
+        return message
+    session = next((s for s in ctx.sessions.sessions if s.session_id == message.session_id), None)
+    if session is None:
+        return message
+    reader = ctx.readers(session, binding_for(session, ctx.bindings))
+    return confirm_if_seen(ctx.conn, message, session, reader, ctx.now())
+
+
+def rechecked(stored: list[Message], ctx: Context) -> list[Message]:
+    try:
+        return [recheck(message, ctx) for message in stored]
+    except BellhopError as error:
+        ctx.warnings.append(f"cannot recheck transcripts: {error}")
+        return get_messages(ctx.conn, [m.id for m in stored])
+
+
 def status(args: argparse.Namespace, ctx: Context) -> int:
-    found = get_messages(ctx.conn, args.ids)
+    found = rechecked(get_messages(ctx.conn, args.ids), ctx)
     known = {message.id for message in found}
     ctx.warnings += [f"unknown message id {i}" for i in args.ids if i not in known]
     if args.json:
@@ -289,7 +373,8 @@ def inbox_targets(ctx: Context, target_text: str | None) -> list[tuple[TargetKin
 def inbox(args: argparse.Namespace, ctx: Context) -> int:
     taken = take_inbox(ctx.conn, inbox_targets(ctx, args.target), peek=args.peek, now=ctx.now())
     if args.json:
-        print_json(ok_payload(ctx.warnings, {"messages": [message_object(m) for m in taken]}))
+        rows = [message_object(m) | {"body": m.body} for m in taken]
+        print_json(ok_payload(ctx.warnings, {"messages": rows}))
         return 0
     print_warnings(ctx.warnings)
     print_lines(inbox_lines(taken))

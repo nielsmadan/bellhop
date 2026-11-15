@@ -1,22 +1,24 @@
 import fcntl
+import json
 import os
 import sqlite3
 import sys
 import time
 import traceback
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import IO, NamedTuple, Protocol
 
-from bellhop.config import watched_config
+from bellhop.config import Config, watched_config
 from bellhop.delivery import Channel, confirm_if_seen, drainer_may_push, push_waiting
 from bellhop.errors import HlsUnavailable
-from bellhop.hls import list_sessions
+from bellhop.files import drop_planted, open_private, read_private, write_private
+from bellhop.hls import find_binary, list_sessions
 from bellhop.identity import SESSION_VARS, ProcessTable, alive, process_table
 from bellhop.launch import STARTUP, Progress, StartCheck, expired, failure, start_checker
-from bellhop.models import Binding, Session, TargetKind
+from bellhop.models import Binding, Message, Session, TargetKind
 from bellhop.paths import state_dir
 from bellhop.routes import Route, RouteFinder
 from bellhop.store import (
@@ -38,7 +40,7 @@ from bellhop.store import (
     update_bindings,
 )
 from bellhop.targets import binding_for, follows_processes, live_session, refresh_bindings
-from bellhop.tmux import tmux_for
+from bellhop.tmux import Tmux, configured_server, tmux_for
 from bellhop.transcripts import ReaderFinder
 from bellhop.wiring import wire
 
@@ -52,10 +54,11 @@ BACKOFF_MAX_SECONDS = 10.0
 BACKOFF_STEPS = 4
 STDERR_FD = 2
 LOCK_NAME = "drain.lock"
+STATUS_NAME = "drain.status.json"
+STATUS_LIMIT = 64 * 1024
 LOG_NAME = "drain.log"
 LOG_LIMIT = 1 << 20
 PRIVATE_FILE = 0o600
-NO_FOLLOW = os.O_NOFOLLOW | os.O_CLOEXEC
 CALLER_ONLY_PREFIXES = ("CLAUDE_CODE_MESSAGING_",)
 
 
@@ -68,7 +71,7 @@ class Lock(Protocol):
 class DrainLock:
     def __init__(self, path: Path) -> None:
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        descriptor = os.open(path, os.O_RDWR | os.O_CREAT | NO_FOLLOW, PRIVATE_FILE)
+        descriptor = open_private(path, os.O_RDWR | os.O_CREAT, PRIVATE_FILE)
         self.handle: IO[str] = os.fdopen(descriptor, "r+", encoding="utf-8")
 
     def try_acquire(self) -> bool:
@@ -119,6 +122,8 @@ class State:
     seen: dict[str, Session] = field(default_factory=dict)
     errors: dict[tuple[TargetKind, str], str] = field(default_factory=dict)
     failures: int = 0
+    working: dict[str, datetime] = field(default_factory=dict)
+    watch_until: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -260,12 +265,30 @@ def _complete_starts(
     abandon_starts(deps.conn, now)
 
 
-def _confirm(deps: Deps, view: View) -> None:
-    for message in awaiting_confirmation(deps.conn, view.now - CONFIRM_WINDOW):
+WORKING = frozenset({"working", "permission", "compacting"})
+
+
+def still_confirmable(message: Message, working: Mapping[str, datetime], now: datetime) -> bool:
+    sent = message.sent_at or message.created_at
+    busy = working.get(message.session_id or "", sent)
+    return now - max(sent, busy) < CONFIRM_WINDOW
+
+
+def _confirm(deps: Deps, state: State, view: View) -> None:
+    state.working = {
+        sid: at for sid, at in state.working.items() if view.now - at < CONFIRM_WINDOW
+    } | {sid: view.now for sid, session in view.present.items() if session.phase in WORKING}
+    waiting = [
+        message
+        for message in awaiting_confirmation(deps.conn, view.now - EXPIRY)
+        if still_confirmable(message, state.working, view.now)
+    ]
+    for message in waiting:
         session = view.present.get(message.session_id or "")
         if session is not None:
             reader = deps.readers(session, binding_for(session, view.bindings))
             confirm_if_seen(deps.conn, message, session, reader, view.now)
+    state.watch_until = view.now + CONFIRM_WINDOW if waiting else None
 
 
 def starting_bindings(current: Sequence[Binding]) -> list[Binding]:
@@ -292,7 +315,7 @@ def tick(deps: Deps, state: State) -> None:
         current = bindings(deps.conn)
         targets = pending_targets(deps.conn)
     view = View(present, current, table, now)
-    _confirm(deps, view)
+    _confirm(deps, state, view)
     for target in targets:
         try:
             _drain_target(deps, state, target, view)
@@ -308,8 +331,9 @@ def tick(deps: Deps, state: State) -> None:
     state.pushed = {sid: last for sid, last in state.pushed.items() if now - last.at < PACE}
 
 
-def work_left(deps: Deps) -> bool:
-    return drain_work(deps.conn, deps.now())
+def work_left(deps: Deps, state: State) -> bool:
+    watching = state.watch_until is not None and deps.now() < state.watch_until
+    return drain_work(deps.conn, deps.now()) or watching
 
 
 def backoff(failures: int) -> float:
@@ -319,9 +343,9 @@ def backoff(failures: int) -> float:
 def run(deps: Deps, lock: Lock) -> int:
     state = State()
     while True:
-        if not work_left(deps):
+        if not work_left(deps, state):
             lock.release()
-            if not work_left(deps) or not lock.try_acquire():
+            if not work_left(deps, state) or not lock.try_acquire():
                 return 0
             continue
         try:
@@ -336,9 +360,16 @@ def run(deps: Deps, lock: Lock) -> int:
 
 
 def drainer_starts(
-    conn: sqlite3.Connection, routes: RouteFinder, env: Mapping[str, str]
+    conn: sqlite3.Connection,
+    routes: RouteFinder,
+    env: Mapping[str, str],
+    config: Callable[[], Config],
 ) -> StartCheck:
-    return start_checker(conn, routes, lambda socket: tmux_for(env, socket))
+    def server(socket: str) -> Tmux | None:
+        allowed = configured_server(env, config().tmux_socket, socket)
+        return tmux_for(env, socket) if allowed else None
+
+    return start_checker(conn, routes, server)
 
 
 def keeping_config(error: Exception) -> None:
@@ -347,6 +378,71 @@ def keeping_config(error: Exception) -> None:
 
 def lock_path(env: Mapping[str, str]) -> Path:
     return state_dir(env) / LOCK_NAME
+
+
+@dataclass(frozen=True)
+class DrainStatus:
+    pid: int
+    started_at: str
+    hooklinesinker: str | None
+    hls_ok: bool | None = None
+    last_error: str | None = None
+
+
+def status_path(env: Mapping[str, str]) -> Path:
+    return state_dir(env) / STATUS_NAME
+
+
+def write_status(path: Path, status: DrainStatus) -> None:
+    try:
+        write_private(path, json.dumps(asdict(status)))
+    except OSError as error:
+        print(f"bellhop: drainer: cannot write {path}: {error}", file=sys.stderr, flush=True)
+
+
+def read_status(env: Mapping[str, str]) -> DrainStatus | None:
+    try:
+        raw = json.loads(read_private(status_path(env), STATUS_LIMIT))
+        return DrainStatus(**raw) if isinstance(raw, dict) else None
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def lock_owner(env: Mapping[str, str]) -> int | None:
+    try:
+        text = read_private(lock_path(env), STATUS_LIMIT).strip()
+    except OSError:
+        return None
+    return int(text) if text.isdigit() else None
+
+
+def reporting_sessions(
+    env: Mapping[str, str], path: Path, first: DrainStatus
+) -> Callable[[], Sequence[Session]]:
+    current = [first]
+
+    def record(status: DrainStatus) -> None:
+        if status != current[0]:
+            write_status(path, status)
+            current[0] = status
+
+    def listed() -> Sequence[Session]:
+        try:
+            found = list_sessions(env).sessions
+        except HlsUnavailable as error:
+            record(replace(current[0], hls_ok=False, last_error=str(error)))
+            raise
+        record(replace(current[0], hls_ok=True))
+        return found
+
+    return listed
+
+
+def resolved_hls(env: Mapping[str, str]) -> str | None:
+    try:
+        return str(find_binary(env))
+    except HlsUnavailable:
+        return None
 
 
 def drainer_running(env: Mapping[str, str]) -> bool:
@@ -402,20 +498,26 @@ def start_drainer(env: Mapping[str, str]) -> int | None:
         return None
     log = state_dir(env) / LOG_NAME
     rotate_log(log)
-    log_flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW
-    closes = [(os.POSIX_SPAWN_CLOSE, fd) for fd in inherited_fds(open_fds())]
-    return os.posix_spawn(
-        sys.executable,
-        drainer_argv(sys.executable),
-        drainer_env(env),
-        file_actions=[
-            *closes,
-            (os.POSIX_SPAWN_OPEN, 0, os.devnull, os.O_RDONLY, 0),
-            (os.POSIX_SPAWN_OPEN, 1, str(log), log_flags, PRIVATE_FILE),
-            (os.POSIX_SPAWN_DUP2, 1, 2),
-        ],
-        setsid=True,
-    )
+    drop_planted(log)
+    opened = open_private(log, os.O_WRONLY | os.O_APPEND | os.O_CREAT, PRIVATE_FILE)
+    descriptor = fcntl.fcntl(opened, fcntl.F_DUPFD_CLOEXEC, STDERR_FD + 1)
+    os.close(opened)
+    try:
+        closes = [(os.POSIX_SPAWN_CLOSE, fd) for fd in inherited_fds(open_fds())]
+        return os.posix_spawn(
+            sys.executable,
+            drainer_argv(sys.executable),
+            drainer_env(env),
+            file_actions=[
+                (os.POSIX_SPAWN_DUP2, descriptor, 1),
+                (os.POSIX_SPAWN_DUP2, descriptor, 2),
+                *closes,
+                (os.POSIX_SPAWN_OPEN, 0, os.devnull, os.O_RDONLY, 0),
+            ],
+            setsid=True,
+        )
+    finally:
+        os.close(descriptor)
 
 
 def main(env: Mapping[str, str]) -> int:
@@ -425,18 +527,20 @@ def main(env: Mapping[str, str]) -> int:
         lock.close()
         return 0
     lock.record_owner()
+    status = DrainStatus(os.getpid(), datetime.now(UTC).isoformat(), resolved_hls(env))
+    write_status(status_path(env), status)
     conn = open_store(state_dir(env))
     config = watched_config(env, on_error=keeping_config)
     wiring = wire(env, config)
     deps = Deps(
         conn=conn,
-        sessions=lambda: list_sessions(env).sessions,
+        sessions=reporting_sessions(env, status_path(env), status),
         routes=wiring.routes,
         readers=wiring.readers,
         table=process_table,
         now=lambda: datetime.now(UTC),
         sleep=time.sleep,
-        starts=drainer_starts(conn, wiring.routes, env),
+        starts=drainer_starts(conn, wiring.routes, env, config),
     )
     try:
         return run(deps, lock)

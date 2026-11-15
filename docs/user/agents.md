@@ -2,7 +2,9 @@
 
 An agent is a name for one long-lived coding-agent session. A session gets the name with
 `bellhop bind <agent>`, or bellhop starts one with `bellhop launch <agent>` or
-`bellhop send <agent> TEXT --wake`. Agents live in `$XDG_CONFIG_HOME/bellhop/config.toml`.
+`bellhop send <agent> TEXT --wake`. Agents live in `$XDG_CONFIG_HOME/bellhop/config.toml`. A name
+uses lowercase letters, digits, `_` and `-`, starts with a letter or digit, and is at most 64
+characters.
 
 ## Config
 
@@ -105,10 +107,12 @@ and `bellhop send <agent> TEXT --wake`, under one lock per agent:
   stores its message `failed`; `launch` clears it and starts again.
 - A `--wake` that cannot start the agent stores the message `pending` with a warning naming the
   cause, and leaves the binding alone, so a later wake tries again: no `command`, a `cwd` that is
-  not a directory, no tmux on `PATH`, an unusable runtime dir (Codex), an environment variable
+  not a directory, no tmux (on `PATH`, else at `/opt/homebrew/bin/tmux`, `/usr/local/bin/tmux` or
+  `/usr/bin/tmux`), an unusable runtime dir (Codex), an environment variable
   name the child cannot be given, or tmux failing before it opened a session (no answer, no free
   session name). `launch` of such an agent fails with that cause's error code (`invalid_config`
-  for the configuration causes, `launch_failed` for tmux, `runtime_dir_unsafe` for the runtime
+  for the configuration causes and no tmux, `launch_failed` when tmux fails before it
+  opens a session, `runtime_dir_unsafe` for the runtime
   dir) and stores nothing. A `start failed:` binding, and a stored `failed` or `outcome unknown`
   first message, happen only once tmux was asked to open the session.
 - A `hold` message never starts an agent, and `--wake` does nothing for a session target.
@@ -147,8 +151,8 @@ A start fails when:
 - the pane shows a login screen, or a first-start screen bellhop never answers: Claude's folder
   trust, theme or development-channels screen; Codex's hook review, directory trust, model
   notice or resume-directory choice. The binding's `detail` says which and how to attach, for
-  example `start failed: stopped at the trust-folder screen; attach with: tmux -L fleet attach
-  -t =enki`;
+  example `start failed: stopped at the trust-folder screen; attach with: tmux -S
+  /private/tmp/tmux-501/fleet attach -t =enki`;
 - it is not ready after 90 s (a permission prompt left open counts as not ready);
 - its tmux pane closes first, or tmux refuses the session (or does not answer for 90 s);
 - hooklinesinker stays unavailable past the 90 s.

@@ -113,7 +113,7 @@ def host_paths(
 @dataclass
 class SmokeRun:
     cache: Path
-    environ: Mapping[str, str]
+    environ: Mapping[str, str] = field(repr=False)
     socket: str = SMOKE_SOCKET
     sops_exec: Path | None = None
     hls_source: Path | None = None
@@ -697,6 +697,21 @@ def owned_drainer(state_home: Path, procs: Sequence[Proc]) -> Proc | None:
 
 def in_a_run(state_home: Path) -> bool:
     return any(RUN_ID.fullmatch(parent.name) for parent in state_home.resolve().parents)
+
+
+def drainer_running(env: Mapping[str, str]) -> bool:
+    state_home = env.get("XDG_STATE_HOME") or str(Path(env.get("HOME", "~")) / ".local/state")
+    try:
+        descriptor = os.open(Path(state_home) / "bellhop" / "drain.lock", os.O_RDONLY)
+    except FileNotFoundError:
+        return False
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    finally:
+        os.close(descriptor)
+    return False
 
 
 def stop_drainer(env: Mapping[str, str]) -> str | None:

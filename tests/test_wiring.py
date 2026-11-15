@@ -1,6 +1,9 @@
 import contextlib
+import os
+import pwd
 import socket
 import threading
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -11,7 +14,7 @@ from bellhop.models import Binding
 from bellhop.routes import endpoint_routes
 from bellhop.routes.codex import CONTROL_SOCKET, CodexRoute
 from bellhop.routes.endpoint import Pongs
-from bellhop.wiring import endpoint_transcript, pi_agent_dir, wire
+from bellhop.wiring import endpoint_transcript, fake_routes, pi_agent_dir, session_homes, wire
 from conftest import NOW, make_session, pong_line
 
 
@@ -120,3 +123,79 @@ def test_a_configured_agent_without_a_codex_home_uses_its_own_home_not_the_calle
     route = wire(env, lambda: config).routes(session, binding)
 
     assert route == CodexRoute(tmp_path / ".codex" / CONTROL_SOCKET)
+
+
+@pytest.mark.parametrize(("state_home", "honoured"), [(None, False), ("/srv/state", True)])
+def test_fake_routes_act_only_on_a_non_default_state_dir(
+    state_home: str | None, honoured: bool
+) -> None:
+    env = {"HOME": "/home/me", "BELLHOP_FAKE_ROUTES": "/t/routes.json"}
+    if state_home:
+        env["XDG_STATE_HOME"] = state_home
+
+    assert (fake_routes(env) is not None) == honoured
+
+
+def test_a_session_target_uses_its_own_homes_whatever_the_drainer_was_started_with(
+    tmp_path: Path,
+) -> None:
+    own = tmp_path / "own-codex"
+    thread = "01a1d948-f680-7000-8000-000000000001"
+    rollout = (
+        own / "sessions" / "2026" / "11" / "14" / f"rollout-2026-11-14T09-00-00-{thread}.jsonl"
+    )
+    rollout.parent.mkdir(parents=True)
+    rollout.write_text("")
+    pi_own = tmp_path / "own-pi"
+    pi_file = pi_own / "sessions" / "--work-x--" / "s.jsonl"
+    pi_file.parent.mkdir(parents=True)
+    pi_file.write_text("")
+    drainer_env = {
+        "HOME": str(tmp_path),
+        "CODEX_HOME": str(tmp_path / "drainer-codex"),
+        "PI_CODING_AGENT_DIR": str(tmp_path / "drainer-pi"),
+    }
+    wiring = wire(drainer_env, lambda: Config(Path("/c")))
+    codex = make_session(thread, harness="codex", pid=None, transcript_path=rollout)
+    pi = make_session("p1", harness="pi", pid=None, transcript_path=pi_file)
+
+    readers = [wiring.readers(session, None) for session in (codex, pi)]
+
+    assert wiring.routes(codex, None) == CodexRoute(own / CONTROL_SOCKET)
+    assert session_homes(pi) == {"PI_CODING_AGENT_DIR": str(pi_own)}
+    assert [r.path(s) if r else None for r, s in zip(readers, (codex, pi), strict=True)] == [
+        rollout,
+        pi_file,
+    ]
+
+
+@pytest.mark.parametrize(
+    "state_home",
+    [
+        lambda home, real: f"{home}/.local/state/../state",
+        lambda home, real: f"{real}/.local/state",
+    ],
+)
+def test_fake_routes_are_ignored_on_any_spelling_of_the_real_state_dir(
+    tmp_path: Path, state_home: Callable[[str, str], str]
+) -> None:
+    real = pwd.getpwuid(os.getuid()).pw_dir
+    env = {
+        "HOME": str(tmp_path),
+        "XDG_STATE_HOME": state_home(str(tmp_path), real),
+        "BELLHOP_FAKE_ROUTES": "/t/routes.json",
+    }
+
+    assert fake_routes(env) is None
+
+
+def test_fake_routes_are_ignored_through_a_link_to_the_real_state_dir(tmp_path: Path) -> None:
+    (tmp_path / ".local" / "state").mkdir(parents=True)
+    (tmp_path / "linked").symlink_to(tmp_path / ".local" / "state")
+    env = {
+        "HOME": str(tmp_path),
+        "XDG_STATE_HOME": str(tmp_path / "linked"),
+        "BELLHOP_FAKE_ROUTES": "/t/routes.json",
+    }
+
+    assert fake_routes(env) is None

@@ -11,7 +11,10 @@ from pathlib import Path
 import pytest
 
 from bellhop.config import parse_config
-from bellhop.drain import LOCK_NAME, drainer_argv
+from bellhop.drain import LOCK_NAME, DrainLock, drainer_argv
+from bellhop.drain import drainer_running as drain_drainer_running
+from bellhop.drain import lock_path as drain_lock_path
+from bellhop.testing import drainer_running as probe_drainer
 from bellhop.testing.run import (
     DRAIN_COMMAND,
     DRAIN_LOCK,
@@ -738,3 +741,23 @@ def test_teardown_stops_the_drainer_after_the_agents_and_their_server(
         pass
 
     assert order[-3:] == ["kill-server", "agents", "drainer"]
+
+
+def test_a_smoke_run_keeps_the_callers_environment_out_of_its_repr(tmp_path: Path) -> None:
+    run = SmokeRun(tmp_path / "cache", {"GH_TOKEN": "secret-value"})
+
+    assert "secret-value" not in repr(run)
+
+
+@pytest.mark.parametrize("held", [True, False])
+def test_the_testing_drainer_probe_agrees_with_the_drainer_lock(tmp_path: Path, held: bool) -> None:
+    env = {"HOME": str(tmp_path), "XDG_STATE_HOME": str(tmp_path / "state")}
+    lock = DrainLock(drain_lock_path(env))
+    if held:
+        assert lock.try_acquire()
+    try:
+        answers = (probe_drainer(env), drain_drainer_running(env))
+    finally:
+        lock.close()
+
+    assert answers == (held, held)

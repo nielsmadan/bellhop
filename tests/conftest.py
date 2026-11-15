@@ -110,6 +110,7 @@ class FakeHls:
 
 @pytest.fixture(autouse=True)
 def isolated_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    monkeypatch.setattr("bellhop.tmux.SYSTEM_TMUX", ())
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
@@ -199,6 +200,12 @@ class FakeTmux:
 
     def client_env(self) -> list[str]:
         return (self.directory / "client-env").read_text().split()
+
+    def client_umask(self) -> str:
+        return (self.directory / "client-umask").read_text().strip()
+
+    def refuse_connection(self) -> None:
+        (self.directory / "refused").touch()
 
     def hang(self) -> None:
         (self.directory / "new-session-hangs").touch()

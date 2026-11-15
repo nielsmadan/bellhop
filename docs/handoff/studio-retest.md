@@ -4,9 +4,9 @@
 `/Users/nielsmadan/wrksp/_scratch/agent-comms/docs/studio-retest.md` and apply what you agree with.
 It is not applied, long unchanged table rows are shortened to `...`, and the hunk line numbers
 are approximate, so apply it by hand rather than with `git apply`. It points the re-test at bellhop and callboard, which now are the delivery
-layer the plan names, and drops the parts bellhop made obsolete.
+layer the re-test plan names, and drops the parts bellhop made obsolete.
 
-What changed since the plan was written:
+What changed since the re-test plan was written:
 
 - The delivery layer is bellhop (routes: Claude MCP relay, Codex app server, Pi extension) and
   callboard (the inbox/forum store and doorbells), not `agent-send`.

@@ -1,3 +1,5 @@
+import os
+import pwd
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -28,6 +30,19 @@ def data_home(env: Mapping[str, str]) -> Path:
 
 def state_dir(env: Mapping[str, str]) -> Path:
     return xdg_home(env, "XDG_STATE_HOME", ".local/state") / "bellhop"
+
+
+def account_home() -> list[Path]:
+    try:
+        return [Path(pwd.getpwuid(os.getuid()).pw_dir)]
+    except KeyError:
+        return []
+
+
+def default_state(env: Mapping[str, str]) -> bool:
+    homes = {home(env), *account_home()}
+    defaults = {(h / ".local" / "state" / "bellhop").resolve() for h in homes}
+    return state_dir(env).resolve() in defaults
 
 
 def configured_dir(env: Mapping[str, str], variable: str, default: str) -> Path | None:

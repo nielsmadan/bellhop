@@ -26,8 +26,8 @@ bellhop whoami [--json]
 bellhop agents [--json]
 bellhop bind <agent> [--json]                       # bind the calling session to a name
 bellhop launch <agent> [--prompt TEXT] [--from NAME] [--key KEY] [--cause TEXT] [--no-wait] [--json]
-bellhop integration show <claude|pi> [--json]       # what to install, and where
-bellhop integration export <claude|pi> --to DIR     # copy the Pi extension or Claude's MCP config to DIR
+bellhop integration show <claude|codex|pi|skill> [--json]   # what to install, and where
+bellhop integration export <claude|pi|skill> --to DIR   # copy the Pi extension, Claude's MCP config or the skill to DIR
 bellhop doctor [--prune] [--json]
 bellhop --version
 ```

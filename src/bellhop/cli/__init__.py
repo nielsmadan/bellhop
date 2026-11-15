@@ -5,7 +5,7 @@ from collections.abc import Sequence
 
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
-    os.umask(0o077)
+    caller_umask = os.umask(0o077)
     if arguments == ["_relay"]:
         from bellhop.relay import main as relay_main
 
@@ -17,7 +17,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if arguments[:1] == ["_codex_session"]:
         from bellhop.codex_session import main as codex_session_main
 
-        return codex_session_main(arguments[1:], os.environ)
+        return codex_session_main(arguments[1:], os.environ, caller_umask)
     from bellhop.cli.command import run_command
 
-    return run_command(arguments)
+    return run_command(arguments, caller_umask)

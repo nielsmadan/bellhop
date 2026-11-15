@@ -6,7 +6,7 @@
 
 ## Context
 
-Task B7 lets `bellhop launch` and `send --wake` start a configured agent that is not running. A
+`bellhop launch` and `send --wake` start a configured agent that is not running. A
 start runs across two processes: the command that opens the tmux session, and the drainer, which
 is the only long-lived bellhop process. A start also has to survive messages arriving close
 together, a drainer that changes, and agents that stop at a screen bellhop must never answer.
@@ -20,8 +20,9 @@ together, a drainer that changes, and agents that stop at a screen bellhop must 
 2. **`route = "launch"` marks a first message, not a delivery route.** The message travels as the
    harness's prompt argument. While its binding is `starting` it is `pending`; it becomes `sent`
    when the start is ready, `failed` when tmux refused the session, `sent` with
-   `outcome unknown; start failed: …` when the start failed after the pane opened, and
-   `failed` with `start abandoned: …` when the binding stopped being `starting` by other means.
+   `outcome unknown; start failed: …` when the start failed after the pane opened, and, when the
+   binding stopped being `starting` by other means, `failed` with `start abandoned: …` or, once
+   the prompt reached tmux, `sent` with `outcome unknown; start abandoned: …`.
 3. **Ready means listed and reachable.** hooklinesinker lists the session (the pre-assigned id
    for Claude and Pi; for Codex, the thread on the agent's own app server whose preview is the
    prompt) and its route answers. Startup screens and login screens fail a start only before the

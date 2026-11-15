@@ -9,6 +9,7 @@ from pathlib import Path
 
 from bellhop.codes import STORE_ERROR
 from bellhop.errors import BellhopError
+from bellhop.files import drop_planted, open_private
 from bellhop.models import (
     Binding,
     Message,
@@ -147,7 +148,11 @@ def enable_wal(
 def connect(path: Path) -> sqlite3.Connection:
     try:
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        os.close(os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600))
+        os.close(open_private(path, os.O_CREAT | os.O_RDWR))
+        for suffix in ("-wal", "-shm"):
+            companion = path.with_name(path.name + suffix)
+            drop_planted(companion)
+            os.close(open_private(companion, os.O_CREAT | os.O_RDWR))
         conn = sqlite3.connect(
             path, timeout=BUSY_TIMEOUT_SECONDS, isolation_level=None, check_same_thread=False
         )
@@ -305,16 +310,30 @@ def get_messages(conn: sqlite3.Connection, ids: Sequence[str]) -> list[Message]:
 
 
 def older_pending(
-    conn: sqlite3.Connection, addresses: Sequence[tuple[TargetKind, str]], seq: int
+    conn: sqlite3.Connection,
+    addresses: Sequence[tuple[TargetKind, str]],
+    seq: int,
+    urgency: Urgency,
 ) -> bool:
     clause = " OR ".join("(target_kind = ? AND target = ?)" for _ in addresses)
     params = [value for address in addresses for value in address]
+    same = "AND urgency = 'now'" if urgency == "now" else ""
     row = conn.execute(
         f"""SELECT 1 FROM messages WHERE ({clause}) AND seq < ?
-        AND urgency != 'hold' AND state IN ('pending', 'sending') LIMIT 1""",
+        AND urgency != 'hold' {same} AND state IN ('pending', 'sending') LIMIT 1""",
         [*params, seq],
     ).fetchone()
     return row is not None
+
+
+def holds_for_session(conn: sqlite3.Connection, session_id: str) -> int:
+    row = conn.execute(
+        """SELECT count(*) AS n FROM messages WHERE urgency = 'hold' AND state = 'pending'
+        AND ((target_kind = 'session' AND target = ?) OR (target_kind = 'agent' AND target IN
+        (SELECT agent FROM bindings WHERE state = 'live' AND session_id = ?)))""",
+        (session_id, session_id),
+    ).fetchone()
+    return int(row["n"])
 
 
 def holds_waiting(conn: sqlite3.Connection, kind: TargetKind, target: str) -> int:
@@ -374,8 +393,10 @@ def sweep_sending(conn: sqlite3.Connection, claimed_before: datetime) -> int:
 
 def pending_targets(conn: sqlite3.Connection) -> list[tuple[TargetKind, str]]:
     rows = conn.execute(
-        """SELECT target_kind, target, min(seq) AS first FROM messages
-        WHERE state = 'pending' AND urgency != 'hold' GROUP BY target_kind, target ORDER BY first"""
+        """SELECT target_kind, target, min(seq) AS first,
+        min(CASE WHEN urgency = 'now' THEN seq END) AS first_now FROM messages
+        WHERE state = 'pending' AND urgency != 'hold' GROUP BY target_kind, target
+        ORDER BY first_now IS NULL, first_now, first"""
     )
     return [(row["target_kind"], row["target"]) for row in rows]
 
@@ -383,7 +404,7 @@ def pending_targets(conn: sqlite3.Connection) -> list[tuple[TargetKind, str]]:
 def oldest_pending(conn: sqlite3.Connection, kind: TargetKind, target: str) -> Message | None:
     row = conn.execute(
         """SELECT * FROM messages WHERE target_kind = ? AND target = ? AND state = 'pending'
-        AND urgency != 'hold' ORDER BY seq LIMIT 1""",
+        AND urgency != 'hold' ORDER BY urgency != 'now', seq LIMIT 1""",
         (kind, target),
     ).fetchone()
     return _message(row) if row else None
@@ -474,9 +495,10 @@ def orphaned(conn: sqlite3.Connection) -> int:
 def prune(conn: sqlite3.Connection, before: datetime) -> int:
     with write(conn):
         cursor = conn.execute(
-            """DELETE FROM messages WHERE state IN ('confirmed', 'read', 'failed')
-            AND coalesce(finished_at, created_at) < ?""",
-            (iso(before),),
+            """DELETE FROM messages WHERE (state IN ('confirmed', 'read', 'failed')
+            AND coalesce(finished_at, created_at) < ?)
+            OR (state = 'sent' AND coalesce(sent_at, created_at) < ?)""",
+            (iso(before), iso(before)),
         )
     conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     return cursor.rowcount
@@ -529,11 +551,6 @@ def put_binding(conn: sqlite3.Connection, binding: Binding) -> None:
             iso(binding.updated_at),
         ),
     )
-
-
-def save_binding(conn: sqlite3.Connection, binding: Binding) -> None:
-    with write(conn):
-        put_binding(conn, binding)
 
 
 def save_binding_unless(

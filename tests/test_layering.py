@@ -9,7 +9,7 @@ PACKAGE_ROOT = SOURCE_ROOT / "bellhop"
 PACKAGE = "bellhop"
 
 LAYERS: tuple[tuple[str, ...], ...] = (
-    ("__init__", "codes", "models", "allowlist"),
+    ("__init__", "codes", "models", "allowlist", "files"),
     ("errors", "codex_rpc"),
     ("paths", "jsonout", "store", "envelope", "transcripts", "routes", "readiness"),
     ("config", "identity", "hls", "tmux", "codex_session"),
@@ -32,7 +32,7 @@ IMPORTS_ALLOWED: Mapping[str, frozenset[str]] = {
     "models": frozenset(),
     "paths": frozenset({"codes", "errors"}),
     "jsonout": frozenset({"errors", "models"}),
-    "store": frozenset({"codes", "errors", "models"}),
+    "store": frozenset({"codes", "errors", "files", "models"}),
     "envelope": frozenset({"codes", "errors"}),
     "transcripts": frozenset({"models"}),
     "routes": frozenset({"codes", "codex_rpc", "errors", "models"}),
@@ -45,6 +45,7 @@ IMPORTS_ALLOWED: Mapping[str, frozenset[str]] = {
             "config",
             "delivery",
             "errors",
+            "files",
             "hls",
             "identity",
             "launch",
@@ -64,8 +65,9 @@ IMPORTS_ALLOWED: Mapping[str, frozenset[str]] = {
     "config": frozenset({"codes", "errors", "models", "paths"}),
     "readiness": frozenset({"models"}),
     "allowlist": frozenset(),
+    "files": frozenset(),
     "tmux": frozenset({"allowlist", "codes", "errors"}),
-    "codex_session": frozenset({"codes", "paths"}),
+    "codex_session": frozenset({"codes", "files", "paths"}),
     "launch": frozenset(
         {
             "allowlist",
@@ -150,7 +152,7 @@ SIBLING_IMPORTS_ALLOWED: Mapping[str, Mapping[str, frozenset[str]]] = {
         "__init__": frozenset({"claude", "codex", "common", "pi"}),
     },
     "testing": {
-        "__init__": frozenset(),
+        "__init__": frozenset({"run"}),
         "screens": frozenset(),
         "tmux": frozenset(),
         "agents": frozenset({"screens"}),

@@ -1,4 +1,5 @@
 import multiprocessing
+import os
 import sqlite3
 import stat
 import threading
@@ -35,6 +36,7 @@ from bellhop.store import (
     get_binding,
     get_messages,
     has_work,
+    holds_for_session,
     holds_waiting,
     insert_message,
     launch_message,
@@ -44,7 +46,6 @@ from bellhop.store import (
     pending_targets,
     prune,
     record_outcome,
-    save_binding,
     save_binding_unless,
     schema_version,
     sweep_sending,
@@ -54,6 +55,10 @@ from bellhop.store import connect as open_connection
 from conftest import NOW, make_message
 
 OPENED: list[sqlite3.Connection] = []
+
+
+def never(existing: object) -> bool:
+    return False
 
 
 def connect(path: Path) -> sqlite3.Connection:
@@ -177,8 +182,8 @@ def test_ordering_and_hold_counts(tmp_path: Path) -> None:
     second = insert_message(conn, make_message(2))
     insert_message(conn, make_message(3, urgency="hold"))
 
-    assert older_pending(conn, [("session", "s1")], second.seq) is True
-    assert older_pending(conn, [("session", "s1")], first.seq) is False
+    assert older_pending(conn, [("session", "s1")], second.seq, "idle") is True
+    assert older_pending(conn, [("session", "s1")], first.seq, "idle") is False
     assert holds_waiting(conn, "session", "s1") == 1
     assert oldest_pending(conn, "session", "s1") == first
     assert pending_targets(conn) == [("session", "s1")]
@@ -193,9 +198,9 @@ def test_an_older_message_in_flight_or_to_the_other_address_counts_as_older(
     to_agent = insert_message(conn, make_message(2, target_kind="agent", target="enki"))
     newer = insert_message(conn, make_message(3))
 
-    assert older_pending(conn, [("session", "s1")], newer.seq) is True
-    assert older_pending(conn, [("session", "s9"), ("agent", "enki")], newer.seq) is True
-    assert older_pending(conn, [("session", "s9")], to_agent.seq) is False
+    assert older_pending(conn, [("session", "s1")], newer.seq, "idle") is True
+    assert older_pending(conn, [("session", "s9"), ("agent", "enki")], newer.seq, "idle") is True
+    assert older_pending(conn, [("session", "s9")], to_agent.seq, "idle") is False
 
 
 def test_claim_then_each_outcome(tmp_path: Path) -> None:
@@ -365,7 +370,7 @@ def test_bindings_round_trip(tmp_path: Path) -> None:
     conn = connect(tmp_path / "bellhop.sqlite")
     binding = binding_named("enki")
 
-    save_binding(conn, binding)
+    save_binding_unless(conn, binding, never)
 
     assert get_binding(conn, "enki") == binding
     assert get_binding(conn, "nobody") is None
@@ -395,13 +400,13 @@ def test_the_per_tick_queries_use_the_partial_index(tmp_path: Path, sql: str) ->
 def test_a_starting_binding_is_work_alone_and_for_its_agents_messages(tmp_path: Path) -> None:
     conn = connect(tmp_path / "bellhop.sqlite")
     window = NOW - timedelta(minutes=10)
-    save_binding(conn, binding_named("enki", state="starting"))
+    save_binding_unless(conn, binding_named("enki", state="starting"), never)
     assert has_work(conn, window) is True
 
     insert_message(conn, make_message(1, target_kind="agent", target="enki"))
-    save_binding(conn, binding_named("enki", state="failed"))
+    save_binding_unless(conn, binding_named("enki", state="failed"), never)
     assert has_work(conn, window) is False
-    save_binding(conn, binding_named("enki", state="starting"))
+    save_binding_unless(conn, binding_named("enki", state="starting"), never)
     assert has_work(conn, window) is True
 
 
@@ -417,7 +422,7 @@ def test_a_version_2_store_gains_the_transcript_column(tmp_path: Path) -> None:
     stored = insert_message(conn, make_message(1))
     claim(conn, stored.id, Push("s1", "fake", 3, Path("/t/s1.jsonl")), NOW)
 
-    assert schema_version(conn) == 3
+    assert schema_version(conn) == SCHEMA_VERSION
     assert get_messages(conn, [stored.id])[0].transcript == Path("/t/s1.jsonl")
 
 
@@ -491,7 +496,7 @@ def test_a_start_whose_binding_changed_meanwhile_is_not_settled(tmp_path: Path) 
     conn = connect(tmp_path / "s.sqlite")
     started(conn)
     rebound = replace(STARTING, state="live", cause="bind")
-    save_binding(conn, rebound)
+    save_binding_unless(conn, rebound, never)
 
     settled = finish_start(conn, STARTING, replace(STARTING, state="live"), NOW)
 
@@ -503,7 +508,7 @@ def test_only_launch_messages_of_agents_no_longer_starting_are_abandoned(tmp_pat
     conn = connect(tmp_path / "s.sqlite")
     started(conn)
     abandoned_before = abandon_starts(conn, NOW)
-    save_binding(conn, replace(STARTING, state="live"))
+    save_binding_unless(conn, replace(STARTING, state="live"), never)
 
     abandoned = abandon_starts(conn, NOW)
 
@@ -520,9 +525,86 @@ def test_an_abandoned_prompt_that_reached_tmux_is_outcome_unknown(tmp_path: Path
     conn = connect(tmp_path / "s.sqlite")
     started(conn)
     open_start(conn, STARTING, replace(STARTING, tmux_target="-L t enki:%0"))
-    save_binding(conn, replace(STARTING, state="live"))
+    save_binding_unless(conn, replace(STARTING, state="live"), never)
 
     abandon_starts(conn, NOW)
 
     [message] = get_messages(conn, ["bh_000000000001"])
     assert (message.state, message.detail) == ("sent", f"outcome unknown; {ABANDONED_DETAIL}")
+
+
+def test_prune_also_drops_old_sent_messages_and_keeps_pending_ones(tmp_path: Path) -> None:
+    conn = connect(tmp_path / "bellhop.sqlite")
+    month_ago = NOW - timedelta(days=31)
+    sent = insert_message(conn, make_message(1, created_at=month_ago))
+    claim(conn, sent.id, Push("s1", "fake"), month_ago)
+    record_outcome(conn, sent.id, PushResult("unknown", "no reply"), month_ago)
+    waiting = insert_message(
+        conn, make_message(2, target_kind="agent", target="enki", created_at=month_ago)
+    )
+
+    removed = prune(conn, NOW - timedelta(days=30))
+
+    assert (removed, [m.id for m in get_messages(conn, [sent.id, waiting.id])]) == (1, [waiting.id])
+
+
+def test_the_oldest_now_goes_before_older_idle_messages(tmp_path: Path) -> None:
+    conn = connect(tmp_path / "bellhop.sqlite")
+    insert_message(conn, make_message(1))
+    urgent = insert_message(conn, make_message(2, urgency="now"))
+    insert_message(conn, make_message(3, urgency="now"))
+
+    found = oldest_pending(conn, "session", "s1")
+
+    assert found is not None
+    assert found.id == urgent.id
+
+
+def test_now_waits_only_behind_older_now_messages(tmp_path: Path) -> None:
+    conn = connect(tmp_path / "bellhop.sqlite")
+    insert_message(conn, make_message(1))
+    urgent = insert_message(conn, make_message(2, urgency="now"))
+    later = insert_message(conn, make_message(3, urgency="now"))
+
+    assert [older_pending(conn, [("session", "s1")], m.seq, "now") for m in (urgent, later)] == [
+        False,
+        True,
+    ]
+
+
+def test_the_waiting_count_covers_every_name_bound_to_the_session(tmp_path: Path) -> None:
+    conn = connect(tmp_path / "bellhop.sqlite")
+    save_binding_unless(conn, replace(STARTING, state="live", session_id="s1"), never)
+    insert_message(conn, make_message(1, urgency="hold"))
+    insert_message(conn, make_message(2, urgency="hold", target_kind="agent", target="enki"))
+    insert_message(conn, make_message(3, urgency="hold", target_kind="agent", target="other"))
+
+    assert holds_for_session(conn, "s1") == 2
+
+
+def test_the_drainer_visits_the_address_holding_the_oldest_now_first(tmp_path: Path) -> None:
+    conn = connect(tmp_path / "bellhop.sqlite")
+    insert_message(conn, make_message(1, target_kind="agent", target="nanna"))
+    insert_message(conn, make_message(2, urgency="now"))
+    insert_message(conn, make_message(3, urgency="now", target_kind="agent", target="nanna"))
+
+    assert pending_targets(conn) == [("session", "s1"), ("agent", "nanna")]
+
+
+@pytest.mark.parametrize("suffix", ["-wal", "-shm"])
+@pytest.mark.parametrize("hard", [False, True])
+def test_opening_the_store_drops_a_planted_link_and_leaves_its_target(
+    tmp_path: Path, suffix: str, hard: bool
+) -> None:
+    target = tmp_path / "zshrc"
+    target.write_text("mine\n")
+    planted = tmp_path / f"bellhop.sqlite{suffix}"
+    if hard:
+        os.link(target, planted)
+    else:
+        planted.symlink_to(target)
+
+    conn = connect(tmp_path / "bellhop.sqlite")
+    insert_message(conn, make_message(1))
+
+    assert target.read_text() == "mine\n"

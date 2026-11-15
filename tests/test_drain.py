@@ -13,23 +13,28 @@ from pathlib import Path
 
 import pytest
 
+from bellhop.config import Config
 from bellhop.drain import (
     Deps,
     DrainLock,
+    DrainStatus,
     State,
     backoff,
     drainer_argv,
     drainer_env,
     drainer_starts,
+    reporting_sessions,
     rotate_log,
     run,
     start_drainer,
     tick,
+    work_left,
+    write_status,
 )
 from bellhop.errors import HlsUnavailable
 from bellhop.identity import Proc
 from bellhop.launch import Progress, StartCheck, expired, failure
-from bellhop.models import Binding, Session
+from bellhop.models import Binding, PushResult, Session
 from bellhop.routes.fake import FakeRoute
 from bellhop.store import (
     ABANDONED_DETAIL,
@@ -40,12 +45,17 @@ from bellhop.store import (
     get_binding,
     get_message,
     insert_message,
-    save_binding,
+    record_outcome,
+    save_binding_unless,
 )
 from bellhop.transcripts import PlainTranscripts
 from conftest import FAKE_HLS, NOW, STARTED, FakeHls, FakeTmux, make_message, make_session
 
 ENKI = Binding("enki", "claude", "live", "s1", 4242, STARTED, None, None, None, "bind", None, NOW)
+
+
+def never(existing: object) -> bool:
+    return False
 
 
 SLEEP_LIMIT = 10_000
@@ -265,9 +275,10 @@ def test_an_agent_target_drains_once_a_binding_appears(world: World) -> None:
     tick(world.deps, state)
     assert world.route.pushes == []
 
-    save_binding(
+    save_binding_unless(
         world.conn,
         ENKI,
+        never,
     )
     tick(world.deps, state)
 
@@ -280,7 +291,7 @@ def test_a_now_message_drained_over_a_non_interrupting_route_reports_the_degrade
     stored = insert_message(
         world.conn, make_message(1, target_kind="agent", target="enki", urgency="now")
     )
-    save_binding(world.conn, ENKI)
+    save_binding_unless(world.conn, ENKI, never)
     world.route = FakeRoute(can_interrupt=False)
 
     tick(world.deps, State())
@@ -315,7 +326,7 @@ def test_one_target_failing_does_not_stop_the_others(
 
 
 def test_two_addresses_of_one_session_share_its_pacing(world: World) -> None:
-    save_binding(world.conn, ENKI)
+    save_binding_unless(world.conn, ENKI, never)
     insert_message(world.conn, make_message(1, target_kind="agent", target="enki"))
     insert_message(world.conn, make_message(2))
     world.route = FakeRoute(queues_until_idle=False, busy_answer=False)
@@ -358,7 +369,7 @@ def test_ps_runs_only_when_a_binding_or_a_vanished_session_needs_it(world: World
     tick(counted, State())
     assert calls == []
 
-    save_binding(world.conn, ENKI)
+    save_binding_unless(world.conn, ENKI, never)
     tick(counted, State())
     assert calls == [1]
 
@@ -413,11 +424,12 @@ def test_another_drainer_taking_the_lock_ends_this_one(world: World) -> None:
 
 
 def test_a_binding_follows_its_process_to_a_new_session_id(world: World) -> None:
-    save_binding(
+    save_binding_unless(
         world.conn,
         Binding(
             "enki", "claude", "live", "old", 4242, STARTED, None, None, None, "bind", None, NOW
         ),
+        never,
     )
     insert_message(world.conn, make_message(1, target_kind="agent", target="enki", created_at=NOW))
 
@@ -605,7 +617,7 @@ def test_the_drainer_exits_when_only_messages_to_unbound_agents_wait(world: Worl
 
 def test_a_bound_agents_message_is_work_for_the_drainer(world: World) -> None:
     insert_message(world.conn, make_message(1, target_kind="agent", target="enki"))
-    save_binding(world.conn, ENKI)
+    save_binding_unless(world.conn, ENKI, never)
 
     assert run(world.deps, OpenLock()) == 0
 
@@ -634,8 +646,8 @@ def test_the_route_gets_the_binding_of_the_session_it_delivers_to(world: World) 
         given.append((session.session_id, binding.agent if binding else None))
         return world.route
 
-    save_binding(world.conn, ENKI)
-    save_binding(world.conn, replace(ENKI, agent="s1", session_id="elsewhere"))
+    save_binding_unless(world.conn, ENKI, never)
+    save_binding_unless(world.conn, replace(ENKI, agent="s1", session_id="elsewhere"), never)
     insert_message(world.conn, make_message(1))
 
     tick(replace(world.deps, routes=finder), State())
@@ -647,7 +659,7 @@ def test_the_route_gets_the_binding_of_the_session_it_delivers_to(world: World) 
 def test_a_replaced_session_fails_its_messages_and_an_agent_waits(world: World) -> None:
     to_session = insert_message(world.conn, make_message(1))
     to_agent = insert_message(world.conn, make_message(2, target_kind="agent", target="enki"))
-    save_binding(world.conn, ENKI)
+    save_binding_unless(world.conn, ENKI, never)
     world.route = FakeRoute(is_reachable=False, is_replaced=True)
 
     tick(world.deps, State())
@@ -721,7 +733,7 @@ def test_a_message_to_a_stopped_codex_agent_does_not_keep_the_drainer(world: Wor
     stopped = Binding(
         "nanna", "codex", "live", "gone-thread", None, None, None, None, None, "bind", None, NOW
     )
-    save_binding(world.conn, stopped)
+    save_binding_unless(world.conn, stopped, never)
     insert_message(world.conn, make_message(1, target_kind="agent", target="nanna"))
 
     assert run(world.deps, OpenLock()) == 0
@@ -802,7 +814,7 @@ def test_a_start_replaced_meanwhile_is_left_alone(world: World) -> None:
     launched(world)
 
     def rebound(binding: Binding, sessions: Sequence[Session], now: datetime) -> Progress:
-        save_binding(world.conn, ENKI)
+        save_binding_unless(world.conn, ENKI, never)
         return Progress("failed", "x", replace(binding, state="failed", detail="start failed: x"))
 
     tick(replace(world.deps, starts=rebound), State())
@@ -828,7 +840,7 @@ def test_a_start_check_that_raises_is_reported_and_other_targets_still_drain(
 
 
 def test_a_starting_binding_keeps_the_drainer_running(world: World) -> None:
-    save_binding(world.conn, STARTING)
+    save_binding_unless(world.conn, STARTING, never)
     calls: list[int] = []
 
     def ready_later(binding: Binding, sessions: Sequence[Session], now: datetime) -> Progress:
@@ -922,8 +934,132 @@ def test_a_start_prompt_of_unknown_outcome_is_never_confirmed(world: World, tmp_
 def test_the_drainer_checks_a_start_on_the_server_it_was_recorded_on(
     world: World, fake_tmux: FakeTmux
 ) -> None:
-    check = drainer_starts(world.conn, lambda s, b: world.route, dict(os.environ))
+    config = Config(Path("/c/config.toml"), tmux_socket="/srv/tmux/fleet")
+    check = drainer_starts(world.conn, lambda s, b: world.route, dict(os.environ), lambda: config)
 
     check(replace(STARTING, tmux_target="-S /srv/tmux/fleet enki:%3"), [], NOW)
 
     assert fake_tmux.calls()[-1][:2] == ["-S", "/srv/tmux/fleet"]
+
+
+def sent_at(world: World, minutes_ago: int, transcript: Path) -> str:
+    message = insert_message(world.conn, make_message(1, created_at=NOW))
+    then = NOW - timedelta(minutes=minutes_ago)
+    claim(world.conn, message.id, Push("s1", "fake", 0, transcript), then)
+    record_outcome(world.conn, message.id, PushResult("accepted", "ok"), then)
+    return message.id
+
+
+@pytest.mark.parametrize(("phase", "state"), [("working", "confirmed"), ("idle", "sent")])
+def test_a_message_sent_before_a_long_turn_is_confirmed_while_the_session_works(
+    world: World, tmp_path: Path, phase: str, state: str
+) -> None:
+    transcript = tmp_path / "s1.jsonl"
+    transcript.write_text("[bellhop bh_000000000001 from enki] body 1\n")
+    world.sessions = [make_session("s1", transcript_path=transcript, phase=phase)]
+    world.reader = PlainTranscripts()
+    message_id = sent_at(world, 15, transcript)
+
+    tick(world.deps, State())
+
+    assert get_message(world.conn, message_id).state == state
+
+
+def test_the_drainer_keeps_running_while_it_watches_a_working_session(
+    world: World, tmp_path: Path
+) -> None:
+    transcript = tmp_path / "s1.jsonl"
+    transcript.write_text("")
+    world.sessions = [make_session("s1", transcript_path=transcript, phase="working")]
+    world.reader = PlainTranscripts()
+    sent_at(world, 15, transcript)
+    state = State()
+    tick(world.deps, state)
+
+    assert work_left(world.deps, state) is True
+
+
+def test_the_drainer_outlasts_the_confirm_window_while_the_session_keeps_working(
+    world: World, tmp_path: Path
+) -> None:
+    transcript = tmp_path / "s1.jsonl"
+    transcript.write_text("")
+    world.sessions = [make_session("s1", transcript_path=transcript, phase="working")]
+    world.reader = PlainTranscripts()
+    message_id = sent_at(world, 0, transcript)
+    world.advance(9 * 60 + 58.4)
+
+    def slow_tick(seconds: float) -> None:
+        world.sleep(seconds)
+        world.advance(1.4)
+        if world.clock[0] > NOW + timedelta(minutes=12):
+            transcript.write_text("[bellhop bh_000000000001 from enki] body 1\n")
+
+    assert run(replace(world.deps, sleep=slow_tick), OpenLock()) == 0
+    assert get_message(world.conn, message_id).state == "confirmed"
+
+
+def test_a_session_hls_cannot_place_does_not_hold_a_message_open(
+    world: World, tmp_path: Path
+) -> None:
+    transcript = tmp_path / "s1.jsonl"
+    transcript.write_text("")
+    world.sessions = [make_session("s1", transcript_path=transcript, phase="unknown")]
+    world.reader = PlainTranscripts()
+    message_id = sent_at(world, 15, transcript)
+    transcript.write_text("[bellhop bh_000000000001 from enki] body 1\n")
+
+    tick(world.deps, State())
+
+    assert get_message(world.conn, message_id).state == "sent"
+
+
+def test_the_drainer_records_whether_hooklinesinker_answers(
+    tmp_path: Path, fake_hls: FakeHls
+) -> None:
+    path = tmp_path / "drain.status.json"
+    first = DrainStatus(4242, "2026-11-14T09:00:00+00:00", str(fake_hls.path))
+    listed = reporting_sessions(os.environ, path, first)
+    fake_hls.fail(3, "ledger locked")
+    with pytest.raises(HlsUnavailable):
+        listed()
+    failing = json.loads(path.read_text())
+    fake_hls.fail(0, "")
+    fake_hls.respond([])
+
+    listed()
+
+    assert (failing["hls_ok"], failing["last_error"]) == (
+        False,
+        "hooklinesinker sessions --json exited 3: ledger locked",
+    )
+    assert json.loads(path.read_text())["hls_ok"] is True
+
+
+def test_a_status_file_that_cannot_be_written_does_not_stop_the_drainer(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "missing" / "drain.status.json"
+
+    write_status(path, DrainStatus(4242, "2026-11-14T09:00:00+00:00", None))
+
+    assert capsys.readouterr().err.startswith(f"bellhop: drainer: cannot write {path}: ")
+
+
+def test_the_drainer_logs_to_a_fresh_file_in_place_of_a_planted_link(
+    process_env: dict[str, str], tmp_path: Path
+) -> None:
+    target = tmp_path / "zshrc"
+    target.write_text("mine\n")
+    log = tmp_path / "state" / "bellhop" / "drain.log"
+    log.symlink_to(target)
+    pid = start_drainer({**process_env, "FAKE_HLS_EXIT": "3"})
+    try:
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and not (log.exists() and "exited 3" in log.read_text()):
+            time.sleep(0.1)
+        logged = log.exists() and "exited 3" in log.read_text()
+    finally:
+        stop(pid)
+
+    assert (logged, target.read_text(), log.is_symlink()) == (True, "mine\n", False)

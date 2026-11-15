@@ -29,12 +29,12 @@ COMMANDS: Mapping[str, Callable[[argparse.Namespace, Context], int]] = {
 OWN_DRAINER_CHECK = frozenset({"doctor"})
 
 
-def run(args: argparse.Namespace, env: Mapping[str, str]) -> int:
+def run(args: argparse.Namespace, env: Mapping[str, str], caller_umask: int) -> int:
     name = f"{args.command} {args.action}" if getattr(args, "action", None) else args.command
     command = COMMANDS.get(name or "")
     if command is None:
         raise BellhopError(MISSING_COMMAND, code=USAGE)
-    ctx = Context(env)
+    ctx = Context(env, caller_umask=caller_umask)
     try:
         if args.command not in OWN_DRAINER_CHECK:
             ctx.kick()

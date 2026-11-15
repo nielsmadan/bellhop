@@ -6,18 +6,21 @@ from difflib import get_close_matches
 from bellhop.cli.context import Context
 from bellhop.cli.messages import (
     Draft,
+    asked_for,
     build,
     default_sender,
+    explicit_sender,
     latest,
     message_line,
+    normal_body,
     send_message,
     unrouted,
 )
 from bellhop.cli.presentation import escape_controls, print_json, print_lines, print_warnings
-from bellhop.cli.waking import wake
+from bellhop.cli.waking import key_reused, wake
 from bellhop.codes import INVALID_CONFIG, LAUNCH_FAILED, TARGET_NOT_FOUND
 from bellhop.delivery import new_id
-from bellhop.envelope import check_body, clean_sender
+from bellhop.envelope import check_body, check_controls, clean_sender
 from bellhop.errors import BellhopError
 from bellhop.jsonout import agent_object, message_object, ok_payload
 from bellhop.launch import STARTUP, failed_start
@@ -73,16 +76,19 @@ def launch(args: argparse.Namespace, ctx: Context) -> int:
     if args.key is not None:
         existing = find_by_key(ctx.conn, args.key)
         if existing is not None:
+            if args.prompt is None or not asked_for(existing, name, normal_body(args.prompt)):
+                ctx.warnings.append(key_reused(args.key, existing))
             binding = next((b for b in ctx.bindings if b.agent == name), None)
             return emit_launch(name, agent.harness, binding, existing, args, ctx)
     target = resolve(name, ctx.sessions.sessions, ctx.config, ctx.bindings)
-    sender = clean_sender(args.sender or default_sender(ctx))
+    sender = clean_sender(explicit_sender(args) or default_sender(ctx))
     draft = None
     unsent = None
     if args.prompt is not None:
-        draft = Draft(check_body(args.prompt), sender, args.key, True)
+        draft = Draft(check_body(normal_body(args.prompt)), sender, args.key, True)
         unsent = build(target, unrouted("idle"), draft, new_id(), ctx.now())
-    woken = wake(name, unsent, args.cause or "launch", ctx, retry=True)
+    cause = check_controls(args.cause, "--cause") if args.cause else "launch"
+    woken = wake(name, unsent, cause, ctx, retry=True)
     stored, binding = woken.message, woken.binding
     if woken.outcome == "send" and draft is not None:
         stored = send_message(target, draft, "idle", ctx, or_hold=False, confirm=None)

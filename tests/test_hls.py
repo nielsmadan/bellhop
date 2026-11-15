@@ -288,3 +288,14 @@ def test_a_problem_without_a_message_is_shown_as_json(fake_hls: FakeHls) -> None
     assert list_sessions(os.environ).warnings == (
         '{"observedAt": "2026-11-13T09:00:00Z", "code": 7}',
     )
+
+
+def test_a_failing_hls_is_quoted_by_its_first_line_at_most_200_characters(
+    fake_hls: FakeHls,
+) -> None:
+    fake_hls.fail(3, "x" * 300 + "\nsecond line")
+
+    with pytest.raises(HlsUnavailable) as caught:
+        list_sessions(os.environ)
+
+    assert str(caught.value) == f"hooklinesinker sessions --json exited 3: {'x' * 200}…"

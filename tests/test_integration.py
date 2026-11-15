@@ -170,14 +170,6 @@ def test_integration_needs_an_action(capsys: pytest.CaptureFixture[str]) -> None
     assert "ACTION" in capsys.readouterr().err
 
 
-def test_harnesses_without_an_integration_yet_are_usage_errors(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    assert main(["integration", "show", "codex"]) == 2
-
-    assert capsys.readouterr().err == "bellhop: no codex integration yet; available: claude, pi\n"
-
-
 @pytest.mark.skipif(NODE is None, reason="node is not installed")
 def test_the_extension_answers_the_wire_and_cleans_up_its_socket(
     tmp_path: Path, short_tmp: Path
@@ -421,3 +413,36 @@ def test_a_body_cut_short_by_a_stalled_pi_is_never_delivered(
     assert result.outcome == "busy"
     assert result.detail.startswith("the write did not finish")
     assert delivered == []
+
+
+def test_the_skill_exports_into_a_bellhop_folder_the_same_way_twice(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    skills = tmp_path / "skills"
+
+    first = main(["integration", "export", "skill", "--to", str(skills)])
+    second = main(["integration", "export", "skill", "--to", str(skills)])
+
+    assert (first, second) == (0, 0)
+    assert [p.relative_to(skills) for p in sorted(skills.rglob("*"))] == [
+        Path("bellhop"),
+        Path("bellhop/SKILL.md"),
+    ]
+    assert (skills / "bellhop" / "SKILL.md").read_text().startswith("---\nname: bellhop\n")
+    capsys.readouterr()
+    assert main(["integration", "show", "skill"]) == 0
+    assert "export skill --to" in capsys.readouterr().out
+
+
+def test_show_codex_says_there_is_nothing_to_install(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["integration", "show", "codex", "--json"]) == 0
+
+    integration = json.loads(capsys.readouterr().out)["integration"]
+    assert (integration["file"], integration["install_dir"]) == (None, None)
+    assert integration["lines"][0].startswith("Codex needs nothing installed")
+
+
+def test_export_lists_what_it_accepts(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["integration", "export", "codex", "--to", str(tmp_path)]) == 2
+
+    assert "(choose from claude, pi, skill)" in capsys.readouterr().err

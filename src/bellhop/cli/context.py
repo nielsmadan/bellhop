@@ -24,8 +24,9 @@ def utc_now() -> datetime:
 
 @dataclass
 class Context:
-    env: Mapping[str, str]
+    env: Mapping[str, str] = field(repr=False)
     now: Callable[[], datetime] = utc_now
+    caller_umask: int = 0o022
     starter: Starter = field(default_factory=lambda: start_drainer)
     _config: Config | None = None
     _conn: sqlite3.Connection | None = None

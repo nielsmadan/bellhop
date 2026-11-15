@@ -15,6 +15,8 @@ REAL_HOME = Path(REAL_ENV.get("HOME", str(Path.home())))
 REAL_HLS = REAL_HOME / ".local/share/hooklinesinker/bin/hooklinesinker"
 CACHE = Path(__file__).resolve().parents[2] / ".cache" / "smoke"
 CONFIRM = "120"
+BUSY_TRIES = 3
+TOOL_START_SECONDS = 45
 
 type Cell = Callable[[], dict[str, object]]
 
@@ -83,6 +85,26 @@ def measured_reps(rep: Cell, wanted: int = 3, attempts: int = 5) -> dict[str, ob
     measured = [r for r in reps if r.get("measured")]
     safe = len(measured) == wanted and all(r.get("safe") for r in measured)
     return {"ok": safe, "measured": len(measured), "reps": reps}
+
+
+def placement(
+    asked: int | None, tool: int | None, landed: int | None, closed: int | None
+) -> dict[str, bool]:
+    if asked is None or tool is None or closed is None or not asked < tool < closed:
+        return {"ran_tool": False, "boundary": False, "mid_turn": False}
+    return {
+        "ran_tool": True,
+        "boundary": landed is not None and landed > closed,
+        "mid_turn": landed is not None and tool < landed < closed,
+    }
+
+
+def busy_tries(attempt: Cell, tries: int = BUSY_TRIES) -> dict[str, object]:
+    records: list[dict[str, object]] = []
+    while len(records) < tries and not (records and records[-1].get("ran_tool")):
+        records.append(attempt())
+    last = records[-1]
+    return {**last, "ok": bool(last.get("ran_tool") and last.get("ok")), "tries": records}
 
 
 def run_named(cells: Mapping[str, Cell]) -> dict[str, dict[str, object]]:

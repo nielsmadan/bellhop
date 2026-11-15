@@ -3,7 +3,9 @@ import errno
 import os
 import socket
 import stat
-from collections.abc import Mapping
+import sys
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
@@ -11,18 +13,21 @@ from pathlib import Path
 from bellhop.cli.context import Context
 from bellhop.cli.presentation import escape_controls, print_json, print_lines, print_warnings
 from bellhop.codes import DOCTOR_FAILED
-from bellhop.drain import drainer_running
+from bellhop.drain import drainer_running, lock_owner, read_status
 from bellhop.errors import BellhopError
 from bellhop.jsonout import check_object, ok_payload
-from bellhop.models import Harness
+from bellhop.models import FAKE_ROUTES_ENV, Harness
 from bellhop.paths import state_dir
 from bellhop.routes import ENDPOINTS
 from bellhop.routes.endpoint import PING_SECONDS, EndpointKind
-from bellhop.routes.unix import WIRE, Pong, ping
+from bellhop.routes.unix import SOCKET_PATH_LIMIT, WIRE, Pong, endpoint_path, ping
 from bellhop.runtime import PRIVATE_MODE, resolve_runtime_dir
 from bellhop.store import SCHEMA_VERSION, orphaned, prune, schema_version
+from bellhop.wiring import fake_routes
 
 PRUNE_AGE = timedelta(days=30)
+LONGEST_HARNESS = "claude"
+LONGEST_PID = 99_999 if sys.platform == "darwin" else 4_194_304
 NEWER_WIRE = "upgrade bellhop to match the integration"
 UNVERSIONED_WIRE = 1
 REFUSED = frozenset({errno.ECONNREFUSED, errno.ENOENT})
@@ -60,11 +65,26 @@ def socket_inode(path: Path) -> int | None:
     return info.st_ino if stat.S_ISSOCK(info.st_mode) else None
 
 
+@contextmanager
+def inside(directory: Path) -> Iterator[None]:
+    home = os.open(".", os.O_RDONLY)
+    try:
+        os.chdir(directory)
+        yield
+    finally:
+        os.fchdir(home)
+        os.close(home)
+
+
 def refuses(path: Path) -> bool:
     probe = socket.socket(socket.AF_UNIX)
     probe.settimeout(1.0)
     try:
-        probe.connect(str(path))
+        if len(str(path).encode()) < SOCKET_PATH_LIMIT:
+            probe.connect(str(path))
+        else:
+            with inside(path.parent):
+                probe.connect(path.name)
     except OSError as error:
         return error.errno in REFUSED
     finally:
@@ -155,6 +175,14 @@ def _runtime(ctx: Context) -> tuple[Check, Path | None]:
     return _dir_check("runtime directory", path), path
 
 
+def _socket_paths(runtime: Path) -> Check:
+    try:
+        longest = endpoint_path(runtime, LONGEST_HARNESS, LONGEST_PID)
+    except BellhopError as error:
+        return Check("socket paths", False, str(error))
+    return Check("socket paths", True, f"fit: {len(str(longest).encode())} bytes at most")
+
+
 def _store(ctx: Context) -> Check:
     try:
         version = schema_version(ctx.conn)
@@ -172,6 +200,21 @@ def _work(ctx: Context) -> Check:
         return Check("pending work", False, detail)
 
 
+def _drainer_health(ctx: Context) -> list[Check]:
+    status = read_status(ctx.env)
+    running = status is not None and lock_owner(ctx.env) == status.pid
+    if not running or status is None or not drainer_running(ctx.env):
+        return []
+    if status.hls_ok is False:
+        detail = (
+            f"drainer {status.pid} cannot run hooklinesinker ({status.hooklinesinker or 'not found'}"
+            f"): {status.last_error}; stop it; the next bellhop command starts a fresh one"
+        )
+        return [Check("drainer", False, detail)]
+    found = status.hooklinesinker or "not found at its start"
+    return [Check("drainer", True, f"pid {status.pid}, hooklinesinker {found}")]
+
+
 def _drainer(ctx: Context, waiting: int) -> Check:
     if waiting and not drainer_running(ctx.env):
         started = ctx.starter(ctx.env)
@@ -180,15 +223,27 @@ def _drainer(ctx: Context, waiting: int) -> Check:
     return Check("pending work", True, f"{waiting} messages wait for the drainer")
 
 
+def _fake_routes(ctx: Context) -> list[Check]:
+    if not ctx.env.get(FAKE_ROUTES_ENV) or fake_routes(ctx.env):
+        return []
+    detail = f"{FAKE_ROUTES_ENV} is set and ignored: it acts only on a non-default state dir"
+    return [Check("fake routes", False, detail)]
+
+
 def run_checks(ctx: Context) -> tuple[list[Check], Path | None]:
     hls = _hls(ctx)
     store = _store(ctx)
     state = _dir_check("state directory", state_dir(ctx.env))
     runtime, runtime_path = _runtime(ctx)
-    checks = [hls, state, runtime, store]
+    checks = [hls, state, runtime, store, *_fake_routes(ctx)]
     if store.ok:
         checks.append(_work(ctx))
+    try:
+        checks += _drainer_health(ctx)
+    except OSError as error:
+        checks.append(Check("drainer", False, f"cannot check the drainer: {error}"))
     if runtime_path is not None and runtime.ok:
+        checks.append(_socket_paths(runtime_path))
         dead = dead_sockets(runtime_path)
         names = ", ".join(path.name for path in dead)
         checks.append(Check("sockets", not dead, f"dead: {names}" if dead else "none dead"))
@@ -212,6 +267,8 @@ def doctor(args: argparse.Namespace, ctx: Context) -> int:
     checks, runtime = run_checks(ctx)
     store_ok = any(check.name == "store" and check.ok for check in checks)
     pruned = prune_all(ctx, runtime) if args.prune and store_ok else None
+    if pruned is not None:
+        checks, runtime = run_checks(ctx)
     failed = [check.name for check in checks if not check.ok]
     fields = {"checks": [check_object(c.name, c.ok, c.detail) for c in checks], "pruned": pruned}
     if not args.json:

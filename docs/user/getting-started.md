@@ -77,7 +77,8 @@ the message waits until the receiver's current turn ends; see [Sending](sending.
 three urgency levels, receipts and the inbox.
 
 Give agents the [bellhop skill](../../skills/bellhop/SKILL.md) so they know how to send and
-read messages, and add `bellhop inbox` to each agent's allowed commands.
+read messages (`bellhop integration export skill --to <skills dir>` writes
+`<skills dir>/bellhop/SKILL.md`), and add `bellhop inbox` to each agent's allowed commands.
 
 ## Where things live
 

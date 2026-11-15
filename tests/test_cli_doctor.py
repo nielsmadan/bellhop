@@ -1,3 +1,4 @@
+import os
 import socket
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -6,9 +7,10 @@ import pytest
 
 from bellhop.cli import main
 from bellhop.cli.doctor import NEWER_WIRE, remove_if_unchanged, socket_inode
+from bellhop.drain import DrainLock, DrainStatus, lock_path, status_path, write_status
 from bellhop.routes import ENDPOINTS
 from bellhop.routes.pi import UNLISTED_PI
-from bellhop.store import connect, insert_message
+from bellhop.store import SCHEMA_VERSION, connect, insert_message
 from conftest import ALPHA, Bell, check_golden, make_message, pong_line, pong_server
 
 
@@ -32,7 +34,8 @@ def test_a_healthy_setup_passes(bell: Bell, runtime: Path) -> None:
     found = checks(payload)
     assert found["hooklinesinker"] == (True, "4 live sessions")
     assert found["runtime directory"] == (True, str(runtime))
-    assert found["store"] == (True, "schema version 3 of 3")
+    assert found["store"] == (True, f"schema version {SCHEMA_VERSION} of {SCHEMA_VERSION}")
+    assert found["socket paths"][0] is True
     assert found["state directory"] == (True, str(bell.tmp / "state-home" / "bellhop"))
     assert found["sockets"] == (True, "none dead")
     assert payload["pruned"] is None
@@ -92,11 +95,12 @@ def test_dead_sockets_are_reported_and_pruned(bell: Bell, runtime: Path) -> None
     live.listen()
     (runtime / "notes.sock").write_text("not a socket")
 
+    _, before = bell.run("doctor")
     code, payload = bell.run("doctor", "--prune")
     live.close()
 
-    assert code == 1
-    assert checks(payload)["sockets"] == (False, "dead: claude-1.sock")
+    assert checks(before)["sockets"] == (False, "dead: claude-1.sock")
+    assert (code, checks(payload)["sockets"]) == (0, (True, "none dead"))
     assert sorted(path.name for path in runtime.iterdir()) == ["notes.sock", "pi-2.sock"]
     assert payload["pruned"] == {"messages": 0, "sockets": 1}
     assert not (runtime / "claude-1.sock").exists()
@@ -277,4 +281,66 @@ def test_a_relay_that_cannot_name_its_session_is_named(bell: Bell, runtime: Path
     assert checks(payload)["claude sessions"] == (
         False,
         "claude-4242.sock answers but cannot name its session",
+    )
+
+
+def test_doctor_reports_fake_routes_it_ignores_on_the_default_state_dir(
+    bell: Bell, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("XDG_STATE_HOME")
+
+    _, payload = bell.run("doctor")
+
+    checks = {check["name"]: check for check in payload["checks"]}
+    assert checks["fake routes"]["ok"] is False
+
+
+def test_a_runtime_dir_too_long_for_sockets_fails_and_its_dead_sockets_are_found(
+    bell: Bell, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = tmp_path / ("r" * 90)
+    runtime.mkdir(mode=0o700)
+    monkeypatch.setenv("BELLHOP_RUNTIME_DIR", str(runtime))
+    monkeypatch.chdir(runtime)
+    dead = socket.socket(socket.AF_UNIX)
+    dead.bind("pi-99999.sock")
+    dead.close()
+    monkeypatch.chdir(tmp_path)
+
+    code, payload = bell.run("doctor")
+
+    found = checks(payload)
+    assert (code, found["socket paths"][0], found["sockets"]) == (
+        1,
+        False,
+        (False, "dead: pi-99999.sock"),
+    )
+    assert "too long for a socket path" in found["socket paths"][1]
+
+
+def test_doctor_fails_a_drainer_that_cannot_run_hooklinesinker(bell: Bell, runtime: Path) -> None:
+    env = {"HOME": str(bell.tmp), "XDG_STATE_HOME": str(bell.tmp / "state-home")}
+    lock = DrainLock(lock_path(env))
+    assert lock.try_acquire()
+    lock.record_owner()
+    write_status(
+        status_path(env),
+        DrainStatus(
+            os.getpid(), "2026-11-14T09:00:00+00:00", None, False, "hooklinesinker not found"
+        ),
+    )
+    try:
+        code, payload = bell.run("doctor")
+    finally:
+        lock.close()
+
+    assert (code, checks(payload)["drainer"]) == (
+        1,
+        (
+            False,
+            (
+                f"drainer {os.getpid()} cannot run hooklinesinker (not found): hooklinesinker "
+                "not found; stop it; the next bellhop command starts a fresh one"
+            ),
+        ),
     )

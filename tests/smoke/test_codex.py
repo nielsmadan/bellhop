@@ -7,13 +7,16 @@ from pathlib import Path
 import pytest
 from smoke_helpers import (
     CONFIRM,
+    TOOL_START_SECONDS,
     Cell,
     NotBusy,
     bellhop,
+    busy_tries,
     harness_rows,
     jsonl_records,
     measured_reps,
     message,
+    placement,
     run_named,
     smoke_run,
     submit_until,
@@ -40,6 +43,15 @@ AGENT = "cx"
 def payload(record: Mapping[str, object]) -> dict[str, object]:
     value = record.get("payload")
     return value if isinstance(value, dict) else {}
+
+
+TOOL_CALLS = frozenset({"custom_tool_call", "function_call", "local_shell_call"})
+
+
+def ran_sleep(record: Mapping[str, object]) -> bool:
+    body = payload(record)
+    called = record.get("type") == "response_item" and body.get("type") in TOOL_CALLS
+    return called and "sleep" in json.dumps(body)
 
 
 def said(record: Mapping[str, object], role: str) -> str:
@@ -136,6 +148,16 @@ class CodexCells:
     def position(self, predicate: Callable[[Mapping[str, object]], bool]) -> int | None:
         return next((i for i, (_, _, r) in enumerate(self.records()) if predicate(r)), None)
 
+    def tool_started(self, done: str) -> bool:
+        asked = self.position(lambda r: f"DONE {done}" in said(r, "user"))
+        return asked is not None and self.position_after(ran_sleep, asked) is not None
+
+    def position_after(
+        self, predicate: Callable[[Mapping[str, object]], bool], start: int
+    ) -> int | None:
+        found = enumerate(self.records())
+        return next((i for i, (_, _, r) in found if i > start and predicate(r)), None)
+
     def delivered_at(self, tok: str) -> int | None:
         return self.position(
             lambda r: said(r, "user").lstrip().startswith("[bellhop") and tok in said(r, "user")
@@ -153,17 +175,14 @@ class CodexCells:
         self.idle()
         done = token()
         busy = self.busy_with(done)
+        wait_for(lambda: self.tool_started(done), TOOL_START_SECONDS, 0.5)
         tok = token()
         code, state, sent = self.ack(tok, *args)
         self.idle()
         asked = self.position(lambda r: f"DONE {done}" in said(r, "user"))
         landed = self.delivered_at(tok)
         closed = self.turn_closed_after(asked) if asked is not None else None
-        order = (
-            (asked, landed, closed)
-            if asked is not None and landed is not None and closed is not None
-            else None
-        )
+        tool = self.position_after(ran_sleep, asked) if asked is not None else None
         return {
             "code": code,
             "state": state,
@@ -171,16 +190,21 @@ class CodexCells:
             "detail": sent.get("detail"),
             "busy_at_send": busy,
             "answered": self.answered_at(done) is not None,
-            "boundary": order is not None and order[1] > order[2],
-            "mid_turn": order is not None and order[0] < order[1] < order[2],
+            **placement(asked, tool, landed, closed),
         }
 
     def idle_to_working(self) -> dict[str, object]:
+        return busy_tries(self.idle_to_working_once)
+
+    def now_to_working(self) -> dict[str, object]:
+        return busy_tries(self.now_to_working_once)
+
+    def idle_to_working_once(self) -> dict[str, object]:
         found = self.to_working()
         ok = found["code"] == 0 and found["state"] == "confirmed"
         return {"ok": ok and found["busy_at_send"] is True and found["boundary"] is True, **found}
 
-    def now_to_working(self) -> dict[str, object]:
+    def now_to_working_once(self) -> dict[str, object]:
         found = self.to_working("--urgency", "now")
         ok = found["code"] == 0 and found["state"] == "confirmed" and found["busy_at_send"]
         steered = str(found["detail"]).startswith("turn/steer")

@@ -10,14 +10,17 @@ from pathlib import Path
 import pytest
 from smoke_helpers import (
     CONFIRM,
+    TOOL_START_SECONDS,
     Cell,
     NotBusy,
     Record,
     bellhop,
+    busy_tries,
     harness_rows,
     jsonl_records,
     measured_reps,
     message,
+    placement,
     run_named,
     smoke_run,
     submit_until,
@@ -61,6 +64,19 @@ case "$number" in
 esac
 """
 ALLOWED = (*(f"cat {gate}" for gate in GATES.values()), f"sh {CHILD_ENV_SCRIPT}")
+
+
+def ran_tool(gate: str) -> Callable[[Mapping[str, object]], bool]:
+    def ran(record: Mapping[str, object]) -> bool:
+        body = record.get("message")
+        content = body.get("content") if isinstance(body, dict) else None
+        parts = content if isinstance(content, list) else []
+        return record.get("type") == "assistant" and any(
+            isinstance(part, dict) and part.get("type") == "tool_use" and gate in json.dumps(part)
+            for part in parts
+        )
+
+    return ran
 
 
 def ends_turn(record: Mapping[str, object]) -> bool:
@@ -122,6 +138,12 @@ class ClaudeCells:
             raise NotBusy
         return gate
 
+    def tool_started(self, done: str, gate: str) -> bool:
+        asked = self.position(lambda r: r.get("type") == "user" and f"DONE {done}" in text_of(r))
+        ran = ran_tool(gate)
+        found = enumerate(self.records())
+        return asked is not None and any(i > asked and ran(r) for i, (_, _, r) in found)
+
     def release(self, gate: Path) -> None:
         def write() -> None:
             with gate.open("w") as handle:
@@ -181,6 +203,7 @@ class ClaudeCells:
         self.idle()
         done = token()
         gate = self.busy_with(done, "now" if args else "idle")
+        wait_for(lambda: self.tool_started(done, gate.name), TOOL_START_SECONDS, 0.5)
         busy = True
         tok = token()
         code, result = self.send(f"Reply with exactly ACK {tok}.", *args)
@@ -193,9 +216,10 @@ class ClaudeCells:
         asked = self.position(lambda r: r.get("type") == "user" and f"DONE {done}" in text_of(r))
         landed = self.delivered_at(tok)
         closed = self.turn_closed_after(asked) if asked is not None else None
-        order = (
-            (asked, landed, closed)
-            if asked is not None and landed is not None and closed is not None
+        ran = ran_tool(gate.name)
+        tool = (
+            next((i for i, (_, _, r) in enumerate(self.records()) if i > asked and ran(r)), None)
+            if asked is not None
             else None
         )
         return {
@@ -205,8 +229,7 @@ class ClaudeCells:
             "degraded_from": sent.get("degraded_from"),
             "detail": sent.get("detail"),
             "busy_at_send": busy,
-            "boundary": order is not None and order[1] > order[2],
-            "mid_turn": order is not None and order[0] < order[1] < order[2],
+            **placement(asked, tool, landed, closed),
         }
 
     def working_cell(self, priority: str, landing: str, *args: str) -> dict[str, object]:
@@ -222,10 +245,10 @@ class ClaudeCells:
         return {"ok": ok and found[landing] is True, **found}
 
     def idle_to_working(self) -> dict[str, object]:
-        return self.working_cell("later", "boundary")
+        return busy_tries(lambda: self.working_cell("later", "boundary"))
 
     def now_to_working(self) -> dict[str, object]:
-        return self.working_cell("next", "mid_turn", "--urgency", "now")
+        return busy_tries(lambda: self.working_cell("next", "mid_turn", "--urgency", "now"))
 
     def hold_and_inbox(self) -> dict[str, object]:
         self.idle()

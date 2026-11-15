@@ -174,7 +174,7 @@ def cannot_launch(agent: AgentConfig | None, env: Mapping[str, str]) -> str | No
     if not cwd.is_dir():
         return f"its cwd {cwd} is not a directory"
     if tmux_executable(env) is None:
-        return "there is no tmux on PATH"
+        return "there is no tmux on PATH or at the system locations"
     return None
 
 
@@ -356,7 +356,7 @@ def reachable(routes: RouteFinder, session: Session, binding: Binding) -> bool:
 
 
 def start_checker(
-    conn: sqlite3.Connection, routes: RouteFinder, tmux: Callable[[str], Tmux]
+    conn: sqlite3.Connection, routes: RouteFinder, tmux: Callable[[str], Tmux | None]
 ) -> StartCheck:
     def check(binding: Binding, sessions: Sequence[Session], now: datetime) -> Progress:
         place = target_place(binding.tmux_target)
@@ -365,6 +365,10 @@ def start_checker(
                 return failure(binding, "its tmux session never opened", now)
             return Progress("waiting", "opening its tmux session", binding)
         server = tmux(place.socket)
+        if server is None:
+            return failure(
+                binding, f"its tmux server {place.socket} is not the configured one", now
+            )
         hint = server.attach_hint(place.name)
         try:
             captured = server.capture(place.pane)

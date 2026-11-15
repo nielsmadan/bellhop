@@ -1,4 +1,5 @@
 import argparse
+import re
 from collections.abc import Sequence
 from importlib.metadata import version
 from typing import NoReturn
@@ -9,11 +10,23 @@ from bellhop.models import HARNESSES, URGENCIES
 
 MISSING_COMMAND = "missing command; see 'bellhop --help'"
 HARNESS_NAMES = tuple(HARNESSES)
+INTEGRATIONS = (*HARNESS_NAMES, "skill")
+EXPORTS = ("claude", "pi", "skill")
+
+
+DASHED = re.compile(r"unrecognized arguments: -[^-]")
+
+
+def _key(value: str) -> str:
+    if not value:
+        raise argparse.ArgumentTypeError("must not be empty")
+    return value
 
 
 class _Parser(argparse.ArgumentParser):
     def error(self, message: str) -> NoReturn:
-        raise BellhopError(message, code=USAGE)
+        hint = "; put -- before a message that starts with '-'" if DASHED.search(message) else ""
+        raise BellhopError(f"{message}{hint}", code=USAGE)
 
 
 def bellhop_version() -> str:
@@ -44,7 +57,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--or-hold", action="store_true", help="store as hold when the target has no route"
     )
     send.add_argument("--from", dest="sender", metavar="NAME", help="the sender's name")
-    send.add_argument("--key", help="idempotency key; a repeated key pushes nothing")
+    send.add_argument("--key", type=_key, help="idempotency key; a repeated key pushes nothing")
     send.add_argument(
         "--confirm", type=_seconds, metavar="SECONDS", help="wait for the receiver's transcript"
     )
@@ -63,7 +76,7 @@ def build_parser() -> argparse.ArgumentParser:
     launch.add_argument("--prompt", metavar="TEXT", help="the first message for the agent")
     launch.add_argument("--cause", metavar="TEXT", help="why it was started; kept on the binding")
     launch.add_argument("--from", dest="sender", metavar="NAME", help="the prompt's sender")
-    launch.add_argument("--key", help="idempotency key for the prompt")
+    launch.add_argument("--key", type=_key, help="idempotency key for the prompt")
     launch.add_argument(
         "--no-wait", action="store_true", help="return once it is started, before it is ready"
     )
@@ -77,9 +90,9 @@ def build_parser() -> argparse.ArgumentParser:
         dest="action", metavar="ACTION", parser_class=_Parser, required=True
     )
     show = _command(actions, "show", "print what to install and where")
-    show.add_argument("harness", choices=HARNESS_NAMES)
+    show.add_argument("harness", choices=INTEGRATIONS, help="what to show: %(choices)s")
     export = _command(actions, "export", "copy the integration to a directory you control")
-    export.add_argument("harness", choices=HARNESS_NAMES)
+    export.add_argument("harness", choices=EXPORTS, help="what to copy: %(choices)s")
     export.add_argument("--to", required=True, metavar="DIR", help="the directory to copy into")
     doctor = _command(commands, "doctor", "check hls, directories, store and sockets")
     doctor.add_argument("--prune", action="store_true", help="delete old messages and dead sockets")
