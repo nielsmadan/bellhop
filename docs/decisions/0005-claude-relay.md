@@ -13,7 +13,7 @@ session Claude has replaced with `/clear` is refused instead of landing in the n
 
 ## Decision
 
-The relay relies on five things Claude Code does today, none of them a documented interface:
+The relay relies on seven things Claude Code does today, none of them a documented interface:
 
 1. Claude gives each MCP stdio child `CLAUDE_CODE_MESSAGING_SOCKET` and
    `CLAUDE_CODE_MESSAGING_TOKEN`, and a frame `{"type":"auth","token":…}` followed by

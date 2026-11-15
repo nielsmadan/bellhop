@@ -226,7 +226,9 @@ file exists), the extension's report, then the per-cwd directory under `PI_CODIN
   `reachable: false`.
 - `bind` from a Codex session records `$CODEX_HOME/app-server-control/app-server-control.sock`
   from the binding session's own environment, so a sender with another `CODEX_HOME` still reaches
-  that agent; other Codex targets use the sender's `CODEX_HOME` (default `~/.codex`).
+  that agent. For any other binding of an agent in `config.toml`, the agent's `env` decides
+  (`CODEX_HOME`, else `~/.codex` under `HOME`), whatever the sender's environment says (B-7);
+  session targets and agents only bound use the sender's `CODEX_HOME` (default `~/.codex`).
 - hls 1.5.1 reports `process: null` for a thread on the shared daemon (not the daemon's pid as
   B-2's table says for the research harness) and stops listing the daemon's threads when the
   daemon restarts; it lists a thread again after its next turn. A Codex binding therefore fails
@@ -277,8 +279,9 @@ relay and then bellhop's own:
   its parent when the parent has `$CLAUDE_CONFIG_DIR/sessions/<pid>.json`. It takes an ancestor
   further up (up to four levels, one `ps -A` read) only when that ancestor's entry names the
   session the relay started in (`CLAUDE_CODE_SESSION_ID`), so a Claude started from inside
-  another Claude's shell never claims the outer Claude's socket. It waits up to 10 s for an entry
-  Claude writes late, then uses its parent.
+  another Claude's shell never claims the outer Claude's socket. It first waits up to 10 s for its
+  parent's entry, which Claude writes late, then looks at the ancestors once, then uses its parent
+  (B-6f).
 - **What the relay knows.** `CLAUDE_CODE_SESSION_ID` in the relay's environment stays the id the
   session started with. The parent's registry entry follows the session: `sessionId` changed on
   `/clear` (the relay was not restarted) and stayed the same across `/compact`. The relay reads
@@ -305,7 +308,8 @@ relay and then bellhop's own:
   (Claude's socket refused or the write did not finish within 1 s, so nothing was delivered),
   and the same `error …` replies as the Pi extension, with `error session_mismatch unknown` when
   the registry names no session. A request gets 5 s in total and 64 KB; more is dropped with no
-  reply. At most 16 requests are handled at once, and a caller beyond that is closed at once. An
+  reply. At most 16 requests are handled at once, and a caller beyond that gets
+  `busy relay is at capacity` at once (B-6f). An
   `accept` error never stops the relay serving.
 - **Reader path order.** The Claude reader uses hls's `transcriptPath` when it names a file, then
   the file it found before for that session (while it exists), then the path the relay reports.

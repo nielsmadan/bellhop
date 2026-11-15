@@ -7,6 +7,7 @@ The [README](../README.md) is the user manual and the CLI contract.
 | Understand the accepted product and engineering choices | [Decisions](decisions/) |
 | See how each harness's delivery route was measured and chosen | [Delivery routes](reference/routes.md), [ADR 0002](decisions/0002-delivery-routes.md) |
 | Parse bellhop's `--json` output | [JSON output](user/json.md) |
+| Configure agents and let bellhop start them | [Agents](user/agents.md), [ADR 0006](decisions/0006-launching-agents.md) |
 | Work on the code | [AGENTS.md](../AGENTS.md) |
 
 ## Maintenance

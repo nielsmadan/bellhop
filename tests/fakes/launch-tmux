@@ -1,0 +1,48 @@
+#!/bin/sh
+dir=$(dirname "$(dirname "$0")")
+{
+    printf 'CALL\n'
+    for arg; do printf '%s\n' "$arg"; done
+} >> "$dir/calls.log"
+while [ "$1" = "-L" ] || [ "$1" = "-S" ]; do shift 2; done
+command="$1"
+shift
+target=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -t) target="${2#=}"; target="${target%:}"; shift 2 ;;
+        -s) target="$2"; shift 2 ;;
+        -c|-x|-y|-F) shift 2 ;;
+        --) shift; break ;;
+        *) shift ;;
+    esac
+done
+case "$command" in
+    has-session) [ -e "$dir/sessions/$target" ] ;;
+    list-sessions)
+        [ -d "$dir/sessions" ] || exit 1
+        ls "$dir/sessions" ;;
+    new-session)
+        if [ -e "$dir/new-session-fails" ]; then echo "fake: server refused" >&2; exit 1; fi
+        if [ -e "$dir/new-session-hangs-early" ]; then sleep 30; fi
+        env | sed 's/=.*//' | sort > "$dir/client-env"
+        mkdir -p "$dir/sessions"
+        count=$(ls "$dir/sessions" | wc -l | tr -d ' ')
+        printf '%s\n' "%$count" > "$dir/sessions/$target"
+        : > "$dir/argv-$target"
+        for arg; do
+            case "$arg" in
+                *'\;') printf '%s\0' "${arg%??};" >> "$dir/argv-$target" ;;
+                *';') printf '%s\0' "${arg%?}" >> "$dir/argv-$target"; break ;;
+                *) printf '%s\0' "$arg" >> "$dir/argv-$target" ;;
+            esac
+        done
+        if [ -e "$dir/new-session-hangs" ]; then sleep 30; fi
+        echo "%$count" ;;
+    display-message)
+        [ -e "$dir/sessions/$target" ] || exit 1
+        cat "$dir/sessions/$target" ;;
+    capture-pane)
+        [ -e "$dir/pane-gone" ] && exit 1
+        cat "$dir/pane.txt" 2>/dev/null ;;
+esac

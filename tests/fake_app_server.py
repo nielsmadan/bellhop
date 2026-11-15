@@ -41,6 +41,7 @@ class FakeAppServer:
     close_after_upgrade: bool = False
     raw_initialize: bytes | None = None
     delay: float = 0.0
+    previews: dict[str, str] = field(default_factory=dict)
     calls: list[tuple[str, dict[str, object]]] = field(default_factory=list)
     answered: list[dict[str, object]] = field(default_factory=list)
     pongs: list[bytes] = field(default_factory=list)
@@ -59,7 +60,14 @@ class FakeAppServer:
         answers: dict[str, dict[str, object]] = {
             "initialize": {"result": {"userAgent": "fake"}},
             "thread/loaded/list": {"result": {"data": list(self.loaded)}},
-            "thread/read": {"result": {"thread": {"status": self.thread_status()}}},
+            "thread/read": {
+                "result": {
+                    "thread": {
+                        "status": self.thread_status(),
+                        "preview": self.previews.get(str(params.get("threadId")), ""),
+                    }
+                }
+            },
             "thread/turns/list": {"result": {"data": self.turns()}},
             "turn/steer": {"result": {"turnId": params.get("expectedTurnId")}},
         }

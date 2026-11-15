@@ -5,12 +5,14 @@ from pathlib import Path
 
 import pytest
 
-from bellhop.config import Config
+from bellhop.config import AgentConfig, Config
 from bellhop.errors import BellhopError
+from bellhop.models import Binding
 from bellhop.routes import endpoint_routes
+from bellhop.routes.codex import CONTROL_SOCKET, CodexRoute
 from bellhop.routes.endpoint import Pongs
 from bellhop.wiring import endpoint_transcript, pi_agent_dir, wire
-from conftest import make_session, pong_line
+from conftest import NOW, make_session, pong_line
 
 
 @pytest.mark.parametrize(
@@ -68,3 +70,53 @@ def test_the_route_and_the_reader_ask_an_endpoint_once_between_them(short_tmp: P
 
     assert found == (True, Path("/t/c1.jsonl"))
     assert received == [b"ping\n"]
+
+
+def test_a_configured_agents_codex_home_comes_from_its_config_not_the_caller(
+    tmp_path: Path,
+) -> None:
+    agent_home = tmp_path / "agent-codex"
+    rollout = agent_home / "sessions" / "2026" / "11" / "14"
+    rollout.mkdir(parents=True)
+    thread = "01a1d948-f680-7000-8000-000000000001"
+    found = rollout / f"rollout-2026-11-14T09-00-00-{thread}.jsonl"
+    found.write_text("")
+    config = Config(
+        Path("/c"),
+        agents={"nanna": AgentConfig("nanna", "codex", env={"CODEX_HOME": str(agent_home)})},
+    )
+    env = {"HOME": str(tmp_path), "CODEX_HOME": str(tmp_path / "caller-codex")}
+    wiring = wire(env, lambda: config)
+    session = make_session(thread, harness="codex", pid=None, transcript_path=None)
+    binding = Binding(
+        "nanna", "codex", "live", thread, None, None, None, None, None, "bind", None, NOW
+    )
+
+    reader = wiring.readers(session, binding)
+    route = wiring.routes(session, binding)
+
+    assert reader is not None
+    assert reader.path(session) == found
+    assert route == CodexRoute(agent_home / CONTROL_SOCKET)
+
+
+def test_an_unconfigured_targets_codex_home_is_the_callers(tmp_path: Path) -> None:
+    wiring = wire({"CODEX_HOME": str(tmp_path / "caller")}, lambda: Config(Path("/c")))
+    session = make_session("t1", harness="codex", pid=None)
+
+    assert wiring.routes(session, None) == CodexRoute(tmp_path / "caller" / CONTROL_SOCKET)
+
+
+def test_a_configured_agent_without_a_codex_home_uses_its_own_home_not_the_callers(
+    tmp_path: Path,
+) -> None:
+    config = Config(Path("/c"), agents={"nanna": AgentConfig("nanna", "codex")})
+    env = {"HOME": str(tmp_path), "CODEX_HOME": str(tmp_path / "caller-codex")}
+    session = make_session("t1", harness="codex", pid=None)
+    binding = Binding(
+        "nanna", "codex", "live", "t1", None, None, None, None, None, "bind", None, NOW
+    )
+
+    route = wire(env, lambda: config).routes(session, binding)
+
+    assert route == CodexRoute(tmp_path / ".codex" / CONTROL_SOCKET)

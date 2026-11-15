@@ -262,10 +262,18 @@ def test_an_agent_without_a_live_session_stores_pending(
         "title": None,
     }
 
+
+def test_a_wake_for_an_agent_without_a_command_stores_pending_with_a_warning(bell: Bell) -> None:
+    config = bell.tmp / "config-home" / "bellhop" / "config.toml"
+    config.parent.mkdir(parents=True)
+    config.write_text("[agents.nanna]\nharness = 'codex'\n")
+
     code, payload = bell.run("send", "nanna", "now", "--wake", "--from", "enki")
-    assert (code, payload["error"]) == (
-        4,
-        {"code": "no_route", "message": "cannot wake 'nanna': launch is not available yet"},
+
+    assert (code, payload_message(payload)["state"], payload["warnings"]) == (
+        0,
+        "pending",
+        ["cannot launch 'nanna': it has no command to start it with; the message waits"],
     )
 
 

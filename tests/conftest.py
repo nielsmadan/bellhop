@@ -159,6 +159,68 @@ def fake_hls(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakeHls:
     return FakeHls(directory, monkeypatch)
 
 
+FAKE_TMUX = Path(__file__).resolve().parent / "fakes" / "launch-tmux"
+CLAUDE_TRUST = "Do you trust the files in this folder?\n❯ 1. Yes, proceed\n"
+
+
+@dataclass(frozen=True)
+class FakeTmux:
+    directory: Path
+
+    def calls(self) -> list[list[str]]:
+        log = self.directory / "calls.log"
+        if not log.exists():
+            return []
+        chunks = log.read_text().split("CALL\n")[1:]
+        return [chunk.splitlines() for chunk in chunks]
+
+    def commands(self) -> list[str]:
+        return [call[2] if call[0] in ("-L", "-S") else call[0] for call in self.calls()]
+
+    def argv(self, name: str) -> list[str]:
+        return (self.directory / f"argv-{name}").read_text().split("\0")[:-1]
+
+    def sessions(self) -> list[str]:
+        folder = self.directory / "sessions"
+        return sorted(path.name for path in folder.iterdir()) if folder.exists() else []
+
+    def show(self, text: str) -> None:
+        (self.directory / "pane.txt").write_text(text)
+
+    def close_pane(self) -> None:
+        (self.directory / "pane-gone").touch()
+
+    def refuse(self) -> None:
+        (self.directory / "new-session-fails").touch()
+
+    @property
+    def executable(self) -> str:
+        return str(self.directory / "bin" / "tmux")
+
+    def client_env(self) -> list[str]:
+        return (self.directory / "client-env").read_text().split()
+
+    def hang(self) -> None:
+        (self.directory / "new-session-hangs").touch()
+
+    def hang_before_starting(self) -> None:
+        (self.directory / "new-session-hangs-early").touch()
+
+    def occupy(self, name: str) -> None:
+        (self.directory / "sessions").mkdir(exist_ok=True)
+        (self.directory / "sessions" / name).write_text("%9\n")
+
+
+@pytest.fixture
+def fake_tmux(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakeTmux:
+    directory = tmp_path / "fake-tmux"
+    binaries = directory / "bin"
+    binaries.mkdir(parents=True)
+    (binaries / "tmux").symlink_to(FAKE_TMUX)
+    monkeypatch.setenv("PATH", f"{binaries}{os.pathsep}{os.environ['PATH']}")
+    return FakeTmux(directory)
+
+
 @pytest.fixture(autouse=True)
 def drainer_starts(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     started: list[str] = []

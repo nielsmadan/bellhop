@@ -13,6 +13,7 @@ from bellhop.cli.presentation import (
     print_lines,
     print_warnings,
 )
+from bellhop.cli.waking import wake
 from bellhop.codes import INTERNAL_ERROR, INTERRUPTED, NO_ROUTE, PUSH_REJECTED, USAGE
 from bellhop.delivery import Channel, confirm_if_seen, new_id, plan_send, push
 from bellhop.envelope import BODY_LIMIT, check_body, clean_sender, render
@@ -65,20 +66,14 @@ def target_label(target: Target) -> str:
     return target.agent or target.title or target.name
 
 
-def choose(target: Target, urgency: Urgency, args: argparse.Namespace, ctx: Context) -> Delivery:
+def choose(target: Target, urgency: Urgency, ctx: Context, *, or_hold: bool) -> Delivery:
     session = target.session
-    if urgency == "hold":
+    if urgency == "hold" or session is None:
         return Delivery(session, None, urgency, None)
-    if session is None:
-        if args.wake:
-            raise BellhopError(
-                f"cannot wake '{target_label(target)}': launch is not available yet", code=NO_ROUTE
-            )
-        return Delivery(None, None, urgency, None)
     route = ctx.routes(session, binding_for(session, ctx.bindings))
-    if route is not None and ctx.reachable(route, session, strict=not args.or_hold):
+    if route is not None and ctx.reachable(route, session, strict=not or_hold):
         return Delivery(session, route, urgency, None)
-    if args.or_hold:
+    if or_hold:
         return Delivery(session, None, "hold", urgency)
     raise BellhopError(
         f"no usable route to '{target_label(target)}' ({target.harness or 'unknown harness'})",
@@ -95,7 +90,7 @@ class Draft:
 
 
 def build(
-    target: Target, delivery: Delivery, draft: Draft, *, message_id: str, now: datetime
+    target: Target, delivery: Delivery, draft: Draft, message_id: str, now: datetime
 ) -> Message:
     kind: TargetKind = target.kind
     return Message(
@@ -200,13 +195,13 @@ def latest(ctx: Context, stored: Message) -> Message:
 
 
 def finish(
-    stored: Message, target: Target, delivery: Delivery, args: argparse.Namespace, ctx: Context
+    stored: Message, target: Target, delivery: Delivery, confirm: float | None, ctx: Context
 ) -> Message:
     try:
         stored = deliver(stored, target, delivery, ctx)
         ctx.kick()
-        if args.confirm and stored.state == "sent" and delivery.session is not None:
-            stored = wait_for_confirmation(stored, delivery.session, args.confirm, ctx)
+        if confirm and stored.state == "sent" and delivery.session is not None:
+            stored = wait_for_confirmation(stored, delivery.session, confirm, ctx)
     except BellhopError as error:
         error.stored = error.stored or latest(ctx, stored)
         raise
@@ -218,6 +213,10 @@ def finish(
     return stored
 
 
+def unrouted(urgency: Urgency) -> Delivery:
+    return Delivery(None, None, urgency, None)
+
+
 def send(args: argparse.Namespace, ctx: Context) -> int:
     body = read_body(args)
     if args.key is not None:
@@ -225,14 +224,41 @@ def send(args: argparse.Namespace, ctx: Context) -> int:
         if existing is not None:
             return emit_message(existing, args, ctx)
     target = resolve(args.target, ctx.sessions.sessions, ctx.config, ctx.bindings)
-    delivery = choose(target, args.urgency, args, ctx)
     sender = clean_sender(args.sender or default_sender(ctx))
     draft = Draft(body, sender, args.key, bool(args.wake))
-    message = build(target, delivery, draft, message_id=new_id(), now=ctx.now())
+    if args.wake and wakeable(target, args.urgency):
+        unsent = build(target, unrouted(args.urgency), draft, new_id(), ctx.now())
+        woken = wake(str(target.agent), unsent, f"send --wake from {sender}", ctx, retry=False)
+        if woken.outcome != "send" and woken.message is not None:
+            if args.confirm and woken.outcome in ("start", "queue"):
+                ctx.warnings.append("--confirm does not wait for a message that starts its agent")
+            ctx.kick()
+            return emit_message(woken.message, args, ctx)
+    sent = send_message(
+        target, draft, args.urgency, ctx, or_hold=args.or_hold, confirm=args.confirm
+    )
+    return emit_message(sent, args, ctx)
+
+
+def wakeable(target: Target, urgency: Urgency) -> bool:
+    return target.kind == "agent" and target.session is None and urgency != "hold"
+
+
+def send_message(
+    target: Target,
+    draft: Draft,
+    urgency: Urgency,
+    ctx: Context,
+    *,
+    or_hold: bool,
+    confirm: float | None,
+) -> Message:
+    delivery = choose(target, urgency, ctx, or_hold=or_hold)
+    message = build(target, delivery, draft, new_id(), ctx.now())
     stored = insert_message(ctx.conn, message)
     if stored.id != message.id:
-        return emit_message(stored, args, ctx)
-    return emit_message(finish(stored, target, delivery, args, ctx), args, ctx)
+        return stored
+    return finish(stored, target, delivery, confirm, ctx)
 
 
 def status(args: argparse.Namespace, ctx: Context) -> int:

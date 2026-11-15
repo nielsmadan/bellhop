@@ -9,12 +9,12 @@ PACKAGE_ROOT = SOURCE_ROOT / "bellhop"
 PACKAGE = "bellhop"
 
 LAYERS: tuple[tuple[str, ...], ...] = (
-    ("__init__", "codes", "models"),
+    ("__init__", "codes", "models", "allowlist"),
     ("errors", "codex_rpc"),
-    ("paths", "jsonout", "store", "envelope", "transcripts", "routes"),
-    ("config", "identity", "hls"),
+    ("paths", "jsonout", "store", "envelope", "transcripts", "routes", "readiness"),
+    ("config", "identity", "hls", "tmux", "codex_session"),
     ("runtime", "targets"),
-    ("delivery", "wiring"),
+    ("delivery", "wiring", "launch"),
     ("drain", "relay"),
     ("cli", "testing"),
     ("__main__",),
@@ -47,11 +47,13 @@ IMPORTS_ALLOWED: Mapping[str, frozenset[str]] = {
             "errors",
             "hls",
             "identity",
+            "launch",
             "models",
             "paths",
             "routes",
             "store",
             "targets",
+            "tmux",
             "transcripts",
             "wiring",
         }
@@ -60,6 +62,27 @@ IMPORTS_ALLOWED: Mapping[str, frozenset[str]] = {
         {"config", "errors", "identity", "paths", "routes", "runtime", "transcripts"}
     ),
     "config": frozenset({"codes", "errors", "models", "paths"}),
+    "readiness": frozenset({"models"}),
+    "allowlist": frozenset(),
+    "tmux": frozenset({"allowlist", "codes", "errors"}),
+    "codex_session": frozenset({"codes", "paths"}),
+    "launch": frozenset(
+        {
+            "allowlist",
+            "codes",
+            "codex_rpc",
+            "codex_session",
+            "config",
+            "envelope",
+            "errors",
+            "models",
+            "paths",
+            "readiness",
+            "routes",
+            "store",
+            "tmux",
+        }
+    ),
     "runtime": frozenset({"codes", "config", "errors"}),
     "identity": frozenset({"codes", "errors", "models"}),
     "targets": frozenset({"codes", "config", "errors", "identity", "models"}),
@@ -67,6 +90,7 @@ IMPORTS_ALLOWED: Mapping[str, frozenset[str]] = {
     "cli": frozenset(
         {
             "codes",
+            "codex_session",
             "config",
             "delivery",
             "drain",
@@ -75,6 +99,7 @@ IMPORTS_ALLOWED: Mapping[str, frozenset[str]] = {
             "hls",
             "identity",
             "jsonout",
+            "launch",
             "models",
             "paths",
             "relay",
@@ -82,6 +107,7 @@ IMPORTS_ALLOWED: Mapping[str, frozenset[str]] = {
             "runtime",
             "store",
             "targets",
+            "tmux",
             "transcripts",
             "wiring",
         }
@@ -95,11 +121,15 @@ SIBLING_IMPORTS_ALLOWED: Mapping[str, Mapping[str, frozenset[str]]] = {
         "parsing": frozenset(),
         "presentation": frozenset(),
         "context": frozenset(),
-        "messages": frozenset({"context", "presentation"}),
+        "waking": frozenset({"context"}),
+        "messages": frozenset({"context", "presentation", "waking"}),
+        "launching": frozenset({"context", "messages", "presentation", "waking"}),
         "info": frozenset({"context", "presentation"}),
         "doctor": frozenset({"context", "presentation"}),
         "integration": frozenset({"context", "presentation"}),
-        "dispatch": frozenset({"context", "doctor", "info", "integration", "messages", "parsing"}),
+        "dispatch": frozenset(
+            {"context", "doctor", "info", "integration", "launching", "messages", "parsing"}
+        ),
         "command": frozenset({"dispatch", "parsing", "presentation"}),
         "__init__": frozenset({"command"}),
     },
@@ -133,6 +163,7 @@ PACKAGE_ROOT_IMPORTS_ALLOWED: Mapping[str, frozenset[str]] = {
     "bellhop.delivery": frozenset({"bellhop.routes", "bellhop.transcripts"}),
     "bellhop.drain": frozenset({"bellhop.routes", "bellhop.transcripts"}),
     "bellhop.wiring": frozenset({"bellhop.routes", "bellhop.transcripts"}),
+    "bellhop.launch": frozenset({"bellhop.routes"}),
     "bellhop.cli.context": frozenset({"bellhop.routes", "bellhop.transcripts"}),
     "bellhop.cli.messages": frozenset({"bellhop.routes"}),
     "bellhop.cli.info": frozenset({"bellhop.routes"}),

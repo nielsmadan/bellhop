@@ -5,6 +5,7 @@ from bellhop.cli.context import Context
 from bellhop.cli.doctor import doctor
 from bellhop.cli.info import agents, bind, sessions, whoami
 from bellhop.cli.integration import export, show
+from bellhop.cli.launching import launch
 from bellhop.cli.messages import inbox, send, status
 from bellhop.cli.parsing import MISSING_COMMAND
 from bellhop.codes import USAGE
@@ -18,6 +19,7 @@ COMMANDS: Mapping[str, Callable[[argparse.Namespace, Context], int]] = {
     "whoami": whoami,
     "agents": agents,
     "bind": bind,
+    "launch": launch,
     "doctor": doctor,
     "integration show": show,
     "integration export": export,

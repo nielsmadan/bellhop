@@ -27,9 +27,20 @@ from bellhop.drain import (
 )
 from bellhop.errors import HlsUnavailable
 from bellhop.identity import Proc
+from bellhop.launch import Progress, StartCheck, expired, failure
 from bellhop.models import Binding, Session
 from bellhop.routes.fake import FakeRoute
-from bellhop.store import Push, claim, connect, get_message, insert_message, save_binding
+from bellhop.store import (
+    ABANDONED_DETAIL,
+    Push,
+    begin_start,
+    claim,
+    connect,
+    get_binding,
+    get_message,
+    insert_message,
+    save_binding,
+)
 from bellhop.transcripts import PlainTranscripts
 from conftest import FAKE_HLS, NOW, STARTED, FakeHls, make_message, make_session
 
@@ -715,3 +726,150 @@ def test_a_message_to_a_stopped_codex_agent_does_not_keep_the_drainer(world: Wor
     assert run(world.deps, OpenLock()) == 0
 
     assert world.route.pushes == []
+
+
+STARTING = replace(ENKI, state="starting", pid=None, process_started_at=None, tmux_target="enki:%0")
+
+
+def launched(world: World, number: int = 1) -> None:
+    message = make_message(number, target_kind="agent", target="enki", route="launch")
+    begin_start(world.conn, STARTING, message, NOW)
+
+
+def checked(progress: str, **changes: object) -> StartCheck:
+    def check(binding: Binding, sessions: Sequence[Session], now: datetime) -> Progress:
+        if progress == "waiting" and expired(binding, now):
+            return failure(binding, "not ready", now)
+        return Progress(progress, "checked", replace(binding, **changes))  # type: ignore[arg-type]
+
+    return check
+
+
+def test_a_ready_start_goes_live_marks_its_prompt_sent_and_drains_the_queue(world: World) -> None:
+    launched(world)
+    insert_message(world.conn, make_message(2, target_kind="agent", target="enki"))
+    deps = replace(
+        world.deps, starts=checked("ready", state="live", pid=4242, process_started_at=STARTED)
+    )
+
+    tick(deps, State())
+
+    first, second = (
+        get_message(world.conn, "bh_000000000001"),
+        get_message(world.conn, "bh_000000000002"),
+    )
+    assert (first.state, first.route, first.session_id) == ("sent", "launch", "s1")
+    assert (second.state, pushed_bodies(world)) == ("sent", ["body 2"])
+    assert get_binding(world.conn, "enki") == replace(
+        STARTING, state="live", pid=4242, process_started_at=STARTED
+    )
+
+
+def test_a_start_that_fails_after_its_pane_opened_leaves_its_prompt_outcome_unknown(
+    world: World,
+) -> None:
+    launched(world)
+    insert_message(world.conn, make_message(2, target_kind="agent", target="enki"))
+    deps = replace(world.deps, starts=checked("failed", state="failed", detail="start failed: x"))
+
+    tick(deps, State())
+
+    first, second = (
+        get_message(world.conn, "bh_000000000001"),
+        get_message(world.conn, "bh_000000000002"),
+    )
+    assert (first.state, first.detail, second.state) == (
+        "sent",
+        "outcome unknown; start failed: x",
+        "pending",
+    )
+    assert world.route.pushes == []
+
+
+def test_a_waiting_codex_start_keeps_the_thread_it_found(world: World) -> None:
+    launched(world)
+    deps = replace(world.deps, starts=checked("waiting", session_id="thread-1"))
+
+    tick(deps, State())
+
+    binding = get_binding(world.conn, "enki")
+    assert binding is not None
+    assert (binding.state, binding.session_id) == ("starting", "thread-1")
+
+
+def test_a_start_replaced_meanwhile_is_left_alone(world: World) -> None:
+    launched(world)
+
+    def rebound(binding: Binding, sessions: Sequence[Session], now: datetime) -> Progress:
+        save_binding(world.conn, ENKI)
+        return Progress("failed", "x", replace(binding, state="failed", detail="start failed: x"))
+
+    tick(replace(world.deps, starts=rebound), State())
+
+    message = get_message(world.conn, "bh_000000000001")
+    assert get_binding(world.conn, "enki") == ENKI
+    assert (message.state, message.detail) == ("failed", ABANDONED_DETAIL)
+
+
+def test_a_start_check_that_raises_is_reported_and_other_targets_still_drain(
+    world: World, capsys: pytest.CaptureFixture[str]
+) -> None:
+    launched(world)
+    insert_message(world.conn, make_message(2))
+
+    def broken(binding: Binding, sessions: Sequence[Session], now: datetime) -> Progress:
+        raise RuntimeError("pane went missing")
+
+    tick(replace(world.deps, starts=broken), State())
+
+    assert pushed_bodies(world) == ["body 2"]
+    assert "drainer: agent enki: RuntimeError: pane went missing" in capsys.readouterr().err
+
+
+def test_a_starting_binding_keeps_the_drainer_running(world: World) -> None:
+    save_binding(world.conn, STARTING)
+    calls: list[int] = []
+
+    def ready_later(binding: Binding, sessions: Sequence[Session], now: datetime) -> Progress:
+        calls.append(1)
+        if len(calls) < 3:
+            return Progress("waiting", "w", binding)
+        return Progress(
+            "ready", "", replace(binding, state="live", pid=4242, process_started_at=STARTED)
+        )
+
+    assert run(replace(world.deps, starts=ready_later), OpenLock()) == 0
+    assert len(calls) == 3
+
+
+@pytest.mark.parametrize(("after", "state"), [(10, "starting"), (91, "failed")])
+def test_a_start_check_that_keeps_raising_fails_the_start_at_its_deadline(
+    world: World, after: int, state: str
+) -> None:
+    launched(world)
+
+    def broken(binding: Binding, sessions: Sequence[Session], now: datetime) -> Progress:
+        raise RuntimeError("tmux hung")
+
+    world.advance(after)
+    tick(replace(world.deps, starts=broken), State())
+
+    binding = get_binding(world.conn, "enki")
+    assert binding is not None
+    assert binding.state == state
+
+
+@pytest.mark.parametrize(("after", "state"), [(10, "starting"), (91, "failed")])
+def test_a_start_fails_at_its_deadline_even_while_hls_is_unavailable(
+    world: World, after: int, state: str
+) -> None:
+    launched(world)
+    world.failures = 1
+    world.advance(after)
+
+    with pytest.raises(HlsUnavailable):
+        tick(replace(world.deps, starts=checked("waiting")), State())
+
+    binding = get_binding(world.conn, "enki")
+    assert binding is not None
+    assert binding.state == state

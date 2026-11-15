@@ -38,7 +38,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="now: interrupt; idle: wait until the session is idle (default); hold: keep for inbox",
     )
     send.add_argument(
-        "--wake", action="store_true", help="start a stopped agent (not available yet; exits 4)"
+        "--wake", action="store_true", help="start the agent when no session of it is running"
     )
     send.add_argument(
         "--or-hold", action="store_true", help="store as hold when the target has no route"
@@ -58,6 +58,15 @@ def build_parser() -> argparse.ArgumentParser:
     _command(commands, "agents", "list configured and bound agents")
     bind = _command(commands, "bind", "bind this session to an agent name")
     bind.add_argument("agent", help="lowercase letters, digits, '_' and '-'")
+    launch = _command(commands, "launch", "start a configured agent unless it is running")
+    launch.add_argument("agent", help="a configured agent name")
+    launch.add_argument("--prompt", metavar="TEXT", help="the first message for the agent")
+    launch.add_argument("--cause", metavar="TEXT", help="why it was started; kept on the binding")
+    launch.add_argument("--from", dest="sender", metavar="NAME", help="the prompt's sender")
+    launch.add_argument("--key", help="idempotency key for the prompt")
+    launch.add_argument(
+        "--no-wait", action="store_true", help="return once it is started, before it is ready"
+    )
     integration = commands.add_parser(
         "integration",
         help="show or export a harness integration",

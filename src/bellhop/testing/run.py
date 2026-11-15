@@ -1,6 +1,7 @@
 import contextlib
 import fcntl
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -42,6 +43,16 @@ HARNESSES: tuple[Agent, ...] = ("claude", "codex", "pi")
 TEARDOWN_SIGNALS = (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)
 RUN_ID = re.compile(r"\d{8}-\d{6}-[0-9a-f]{4}")
 BASE = Path("/tmp")
+AGENT_ENV = {
+    "AGENT_REQUIRE_SECRETS": "1",
+    "DISABLE_AUTOUPDATER": "1",
+    "PI_SKIP_VERSION_CHECK": "1",
+    "PI_TELEMETRY": "0",
+}
+DRAIN_LOCK = Path("bellhop") / "drain.lock"
+DRAIN_COMMAND = "bellhop _drain"
+DRAIN_STOP_SECONDS = 10.0
+DRAIN_POLL_SECONDS = 0.2
 
 
 class SmokeError(RuntimeError):
@@ -116,6 +127,7 @@ class SmokeRun:
     binaries: dict[Agent, Binary] = field(default_factory=dict)
     tracked: dict[int, Proc] = field(default_factory=dict)
     panes: dict[str, Proc] = field(default_factory=dict)
+    agents: dict[str, tuple[Agent, Path]] = field(default_factory=dict)
     leftovers: list[str] = field(default_factory=list)
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
     paths: HostPaths = field(init=False)
@@ -225,7 +237,11 @@ class SmokeRun:
         return self.binaries[agent]
 
     def _prepare(self, agent: Agent, work: Path) -> None:
-        works = [launched.work for launched in self.launched.values()] + [work]
+        works = [
+            *(launched.work for launched in self.launched.values()),
+            *(known for _, known in self.agents.values()),
+            work,
+        ]
         match agent:
             case "claude":
                 write_claude_home(
@@ -271,6 +287,62 @@ class SmokeRun:
             if pane is not None:
                 self.panes[name] = pane
             launched = Launched(name, agent, work_dir, session_id, pane_pid, pane_id)
+            self.launched[name] = launched
+        self.track()
+        return launched
+
+    def agent_block(
+        self,
+        agent: Agent,
+        name: str,
+        *,
+        extra: Sequence[str] = (),
+        server_command: Sequence[str] = (),
+    ) -> str:
+        with self.lock:
+            work = make_work(self.layout, name)
+            self._prepare(agent, work)
+            self.agents[name] = (agent, work)
+        pi_env, pi_prefix = self._pi_prefix() if agent == "pi" else ({}, [])
+        binary = self.binary(agent)
+        command = launch_argv(binary, self.paths.sops_exec, extra=extra, pi_prefix=pi_prefix)
+        homes = {
+            "claude": {"CLAUDE_CONFIG_DIR": str(self.layout.claude_dir)},
+            "codex": {"CODEX_HOME": str(self.layout.codex_dir)},
+            "pi": {"PI_CODING_AGENT_DIR": str(self.layout.pi_dir)},
+        }[agent]
+        env = {**AGENT_ENV, **pi_env, **homes}
+        table = ", ".join(f"{key} = {json.dumps(value)}" for key, value in env.items())
+        lines = [
+            f"[agents.{name}]",
+            f"harness = {json.dumps(agent)}",
+            f"cwd = {json.dumps(str(work))}",
+            f"command = {json.dumps(command)}",
+            f"env = {{ {table} }}",
+        ]
+        if agent == "codex":
+            server = list(server_command) or [str(binary.path), "app-server"]
+            lines.append(f"server_command = {json.dumps(server)}")
+        return "\n".join(lines) + "\n"
+
+    def write_bellhop_config(self, *blocks: str) -> Path:
+        path = Path(self.env["XDG_CONFIG_HOME"]) / "bellhop" / "config.toml"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"tmux_socket = {json.dumps(self.socket)}\n\n" + "\n".join(blocks))
+        return path
+
+    def adopt_session(self, name: str) -> Launched:
+        if name not in self.agents:
+            raise SmokeError(f"cannot adopt tmux session {name}: no agent_block named it")
+        agent, work = self.agents[name]
+        with self.lock:
+            pane_pid, pane_id = self.tmux.pane(name)
+            procs = ps()
+            pane = next((proc for proc in procs if proc.pid == pane_pid), None)
+            if pane is None or pane_pid in protected(procs):
+                raise SmokeError(f"cannot adopt tmux session {name}: no pane process this run owns")
+            self.panes[name] = pane
+            launched = Launched(name, agent, work, None, pane_pid, pane_id)
             self.launched[name] = launched
         self.track()
         return launched
@@ -362,7 +434,6 @@ class SmokeRun:
         if self._socket_lock is None:
             return []
         problems: list[str] = []
-        drainer = _attempt("stop drainer", self.stop_drainer, problems)
         steps: list[tuple[str, Callable[[], object]]] = [
             ("track", self.track if self.launched else lambda: None),
             ("tmux kill-server", self.tmux.kill_server),
@@ -371,19 +442,17 @@ class SmokeRun:
         ]
         for label, step in steps:
             _attempt(label, step, problems)
-        leftovers = [drainer] if isinstance(drainer, str) else []
-        leftovers += _attempt_list("stop processes", self._stop_survivors, problems)
+        leftovers = _attempt_list("stop processes", self._stop_survivors, problems)
         if _attempt_bool("tmux server check", self.tmux.server_alive, problems):
             leftovers.append(f"tmux server -L {self.socket}")
+        drainer = _attempt("stop drainer", self.stop_drainer, problems)
+        leftovers += [drainer] if isinstance(drainer, str) else []
         _attempt("codex sockets", self._remove_codex_sockets, problems)
         leftovers += _attempt_list("runtime dir", self._remove_runtime_dir, problems)
         self._release()
         return leftovers + problems
 
     def stop_drainer(self) -> str | None:
-        state_home = Path(self.env["XDG_STATE_HOME"])
-        if not state_home.resolve().is_relative_to(self.layout.root.resolve()):
-            return f"skipped the drainer stop: {state_home} is outside the run"
         return stop_drainer(self.env)
 
     def _stop_daemon(self) -> None:
@@ -596,11 +665,6 @@ def parse_ps(text: str) -> list[Proc]:
     return [Proc(int(row[0]), int(row[1]), row[7], " ".join(row[2:7])) for row in rows]
 
 
-DRAIN_LOCK = Path("bellhop") / "drain.lock"
-DRAIN_COMMAND = "bellhop _drain"
-DRAIN_STOP_SECONDS = 10.0
-
-
 def lock_held(path: Path) -> bool:
     try:
         descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
@@ -615,21 +679,31 @@ def lock_held(path: Path) -> bool:
     return False
 
 
+def lock_owner(lock: Path) -> str:
+    try:
+        return lock.read_text().strip() if not lock.is_symlink() else ""
+    except OSError:
+        return ""
+
+
 def owned_drainer(state_home: Path, procs: Sequence[Proc]) -> Proc | None:
     lock = state_home / DRAIN_LOCK
-    try:
-        text = lock.read_text().strip() if not lock.is_symlink() else ""
-    except OSError:
-        return None
+    text = lock_owner(lock)
     proc = next((p for p in procs if text.isdigit() and p.pid == int(text)), None)
     if proc is None or DRAIN_COMMAND not in proc.command or not lock_held(lock):
         return None
-    return proc
+    return proc if lock_owner(lock) == text else None
+
+
+def in_a_run(state_home: Path) -> bool:
+    return any(RUN_ID.fullmatch(parent.name) for parent in state_home.resolve().parents)
 
 
 def stop_drainer(env: Mapping[str, str]) -> str | None:
     state_home = env.get("XDG_STATE_HOME")
-    found = owned_drainer(Path(state_home), ps()) if state_home else None
+    if not state_home or not in_a_run(Path(state_home)):
+        return f"skipped the drainer stop: {state_home} is not a smoke run's state dir"
+    found = owned_drainer(Path(state_home), ps())
     if found is None:
         return None
     with contextlib.suppress(ProcessLookupError):
@@ -638,7 +712,7 @@ def stop_drainer(env: Mapping[str, str]) -> str | None:
     while time.monotonic() < deadline:
         if all(proc.identity != found.identity for proc in ps()):
             return None
-        time.sleep(0.2)
+        time.sleep(DRAIN_POLL_SECONDS)
     return f"drainer {found.pid}"
 
 

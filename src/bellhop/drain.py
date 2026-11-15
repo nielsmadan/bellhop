@@ -10,29 +10,35 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import IO, NamedTuple, Protocol
 
-from bellhop.config import load_config
+from bellhop.config import watched_config
 from bellhop.delivery import Channel, confirm_if_seen, drainer_may_push, push_waiting
 from bellhop.errors import HlsUnavailable
 from bellhop.hls import list_sessions
 from bellhop.identity import SESSION_VARS, ProcessTable, alive, process_table
+from bellhop.launch import STARTUP, Progress, StartCheck, expired, failure, start_checker
 from bellhop.models import Binding, Session, TargetKind
 from bellhop.paths import state_dir
 from bellhop.routes import Route, RouteFinder
 from bellhop.store import (
     GONE_DETAIL,
     REPLACED_DETAIL,
+    abandon_starts,
     awaiting_confirmation,
     bindings,
     expire_sessions,
     fail_pending,
+    fail_start,
+    finish_start,
     has_work,
     oldest_pending,
     open_store,
     pending_targets,
+    save_binding_unless,
     sweep_sending,
     update_bindings,
 )
 from bellhop.targets import binding_for, follows_processes, live_session, refresh_bindings
+from bellhop.tmux import tmux_for
 from bellhop.transcripts import ReaderFinder
 from bellhop.wiring import wire
 
@@ -85,6 +91,10 @@ class DrainLock:
         self.handle.close()
 
 
+def no_starts(binding: Binding, sessions: Sequence[Session], now: datetime) -> Progress:
+    return Progress("waiting", "nothing checks starts here", binding)
+
+
 @dataclass(frozen=True)
 class Deps:
     conn: sqlite3.Connection
@@ -94,6 +104,7 @@ class Deps:
     table: Callable[[], ProcessTable | None]
     now: Callable[[], datetime]
     sleep: Callable[[float], None]
+    starts: StartCheck = no_starts
 
 
 class Pushed(NamedTuple):
@@ -201,6 +212,45 @@ def _report(state: State, target: tuple[TargetKind, str], error: Exception) -> N
     state.errors[target] = text
 
 
+def _settle(deps: Deps, binding: Binding, progress: Progress, now: datetime) -> None:
+    if progress.state == "ready":
+        finish_start(deps.conn, binding, progress.binding, now)
+    elif progress.state == "failed":
+        prompted = binding.tmux_target is not None
+        fail_start(deps.conn, binding, progress.binding, now, prompted=prompted)
+    elif progress.binding != binding:
+        save_binding_unless(deps.conn, progress.binding, lambda existing: existing != binding)
+
+
+def _complete_start(
+    deps: Deps, state: State, binding: Binding, sessions: Sequence[Session], now: datetime
+) -> None:
+    try:
+        progress = deps.starts(binding, sessions, now)
+    except Exception as error:  # noqa: BLE001
+        _report(state, ("agent", binding.agent), error)
+        if not expired(binding, now):
+            return
+        reason = f"not ready after {STARTUP.seconds}s ({type(error).__name__}: {error})"
+        progress = failure(binding, reason, now)
+    _settle(deps, binding, progress, now)
+
+
+def _complete_starts(
+    deps: Deps,
+    state: State,
+    starting: Sequence[Binding],
+    sessions: Sequence[Session],
+    now: datetime,
+) -> None:
+    for binding in starting:
+        try:
+            _complete_start(deps, state, binding, sessions, now)
+        except Exception as error:  # noqa: BLE001
+            _report(state, ("agent", binding.agent), error)
+    abandon_starts(deps.conn, now)
+
+
 def _confirm(deps: Deps, view: View) -> None:
     for message in awaiting_confirmation(deps.conn, view.now - CONFIRM_WINDOW):
         session = view.present.get(message.session_id or "")
@@ -209,16 +259,29 @@ def _confirm(deps: Deps, view: View) -> None:
             confirm_if_seen(deps.conn, message, session, reader, view.now)
 
 
+def starting_bindings(current: Sequence[Binding]) -> list[Binding]:
+    return [binding for binding in current if binding.state == "starting"]
+
+
 def tick(deps: Deps, state: State) -> None:
     now = deps.now()
     sweep_sending(deps.conn, now - STALE_CLAIM)
     expire_sessions(deps.conn, now - EXPIRY, now)
-    sessions = deps.sessions()
+    try:
+        sessions = deps.sessions()
+    except HlsUnavailable:
+        _complete_starts(deps, state, starting_bindings(bindings(deps.conn)), [], now)
+        raise
     present = {session.session_id: session for session in sessions}
     targets = pending_targets(deps.conn)
     state.absent = absences(targets, present, state)
     table = deps.table() if needs_table(bindings(deps.conn), state.absent) else None
     current = follow_bindings(deps.conn, sessions, table, now)
+    starting = starting_bindings(current)
+    _complete_starts(deps, state, starting, sessions, now)
+    if starting:
+        current = bindings(deps.conn)
+        targets = pending_targets(deps.conn)
     view = View(present, current, table, now)
     _confirm(deps, view)
     for target in targets:
@@ -226,7 +289,12 @@ def tick(deps: Deps, state: State) -> None:
             _drain_target(deps, state, target, view)
         except Exception as error:  # noqa: BLE001
             _report(state, target, error)
-    state.errors = {target: text for target, text in state.errors.items() if target in targets}
+    started = {("agent", b.agent) for b in current if b.state == "starting"}
+    state.errors = {
+        target: text
+        for target, text in state.errors.items()
+        if target in targets or target in started
+    }
     state.seen = {name: state.seen[name] for name in state.absent if name in state.seen} | present
     state.pushed = {sid: last for sid, last in state.pushed.items() if now - last.at < PACE}
 
@@ -256,6 +324,10 @@ def run(deps: Deps, lock: Lock) -> int:
             delay = backoff(state.failures)
             print(f"bellhop: drainer: {error}; retrying in {delay:g}s", file=sys.stderr, flush=True)
         deps.sleep(delay)
+
+
+def keeping_config(error: Exception) -> None:
+    print(f"bellhop: drainer: {error}; keeping the last good config", file=sys.stderr, flush=True)
 
 
 def lock_path(env: Mapping[str, str]) -> Path:
@@ -339,7 +411,8 @@ def main(env: Mapping[str, str]) -> int:
         return 0
     lock.record_owner()
     conn = open_store(state_dir(env))
-    wiring = wire(env, lambda: load_config(env))
+    config = watched_config(env, on_error=keeping_config)
+    wiring = wire(env, config)
     deps = Deps(
         conn=conn,
         sessions=lambda: list_sessions(env).sessions,
@@ -348,6 +421,7 @@ def main(env: Mapping[str, str]) -> int:
         table=process_table,
         now=lambda: datetime.now(UTC),
         sleep=time.sleep,
+        starts=start_checker(conn, wiring.routes, lambda socket: tmux_for(env, socket)),
     )
     try:
         return run(deps, lock)

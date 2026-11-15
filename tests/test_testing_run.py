@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from bellhop.config import parse_config
 from bellhop.drain import LOCK_NAME, drainer_argv
 from bellhop.testing.run import (
     DRAIN_COMMAND,
@@ -24,6 +25,7 @@ from bellhop.testing.run import (
     protected,
     ps,
     remove_codex_sockets,
+    stop_drainer,
 )
 
 FAKES = Path(__file__).resolve().parent / "fakes"
@@ -593,10 +595,14 @@ time.sleep(60)
 """
 
 
-def start_fake_drainer(lock: Path, *, holds: bool = True) -> subprocess.Popen[bytes]:
+def start_fake_drainer(
+    lock: Path, *, holds: bool = True, ignore_term: bool = False, command: str = "_drain"
+) -> subprocess.Popen[bytes]:
     lock.parent.mkdir(parents=True, exist_ok=True)
     code = FAKE_DRAINER if holds else "import time; time.sleep(60)"
-    process = subprocess.Popen([sys.executable, "-c", code, str(lock), "bellhop", "_drain"])
+    if ignore_term:
+        code = "import signal; signal.signal(signal.SIGTERM, signal.SIG_IGN)\n" + code
+    process = subprocess.Popen([sys.executable, "-c", code, str(lock), "bellhop", command])
     if not holds:
         lock.write_text(str(process.pid))
     deadline = time.monotonic() + 5
@@ -633,3 +639,81 @@ def test_a_process_that_does_not_hold_the_lock_is_never_stopped(tmp_path: Path) 
 def test_the_helpers_drain_lock_and_command_match_the_drainers() -> None:
     assert Path("bellhop") / LOCK_NAME == DRAIN_LOCK
     assert DRAIN_COMMAND in " ".join(drainer_argv("python"))
+
+
+def test_an_agent_block_is_a_config_bellhop_reads_with_the_agents_own_home(tmp_path: Path) -> None:
+    run = fake_run(tmp_path, run_id="20261113-000000-ffff")
+    with run:
+        block = run.agent_block("claude", "enki", extra=["--strict-mcp-config"])
+        path = run.write_bellhop_config(block)
+    config = parse_config(path, path.read_text(), tmp_path)
+
+    agent = config.agents["enki"]
+    assert (config.tmux_socket, agent.harness, agent.cwd) == (
+        "bellhop-smoke",
+        "claude",
+        run.layout.work / "enki",
+    )
+    assert agent.command[-1] == "--strict-mcp-config"
+    assert agent.env["CLAUDE_CONFIG_DIR"] == str(run.layout.claude_dir)
+    assert agent.env["AGENT_REQUIRE_SECRETS"] == "1"
+
+
+def test_an_adopted_session_is_stopped_at_teardown(tmp_path: Path) -> None:
+    run = fake_run(tmp_path, run_id="20261113-000000-ffee")
+    with run:
+        run.agent_block("claude", "enki")
+        pane = spawn("/bin/sh", "-c", "sleep 300 & wait")
+        write(run, "fake-pane-pid.txt", f"{pane.pid}\n")
+        write(run, "fake-panes.txt", f"enki 0 {pane.pid}\n")
+        adopted = run.adopt_session("enki")
+
+    assert (adopted.pane_pid, pane.wait(10) is not None) == (pane.pid, True)
+
+
+def test_a_drainer_that_ignores_sigterm_is_reported_as_left_behind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("bellhop.testing.run.DRAIN_STOP_SECONDS", 0.5)
+    lock = tmp_path / "20261113-000000-abab" / "state" / "bellhop" / "drain.lock"
+    stubborn = start_fake_drainer(lock, ignore_term=True)
+    try:
+        left = stop_drainer({"XDG_STATE_HOME": str(tmp_path / "20261113-000000-abab" / "state")})
+    finally:
+        stubborn.kill()
+        stubborn.wait(5)
+
+    assert left == f"drainer {stubborn.pid}"
+
+
+def test_a_lock_holder_that_is_not_a_drainer_is_never_stopped(tmp_path: Path) -> None:
+    lock = tmp_path / "20261113-000000-abab" / "state" / "bellhop" / "drain.lock"
+    other = start_fake_drainer(lock, command="sleeper")
+    try:
+        left = stop_drainer({"XDG_STATE_HOME": str(tmp_path / "20261113-000000-abab" / "state")})
+        alive = other.poll() is None
+    finally:
+        other.kill()
+        other.wait(5)
+
+    assert (left, alive) == (None, True)
+
+
+def test_adopting_a_session_no_agent_block_named_is_refused(tmp_path: Path) -> None:
+    run = fake_run(tmp_path, run_id="20261113-000000-efef")
+
+    with pytest.raises(SmokeError, match="no agent_block named it"):
+        run.adopt_session("ghost")
+
+
+def test_a_drainer_outside_any_smoke_run_is_never_stopped(tmp_path: Path) -> None:
+    lock = tmp_path / "home" / ".local" / "state" / "bellhop" / "drain.lock"
+    real = start_fake_drainer(lock)
+    try:
+        reply = stop_drainer({"XDG_STATE_HOME": str(tmp_path / "home" / ".local" / "state")})
+        alive = real.poll() is None
+    finally:
+        real.kill()
+        real.wait(5)
+
+    assert (str(reply).startswith("skipped the drainer stop"), alive) == (True, True)

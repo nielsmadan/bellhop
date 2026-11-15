@@ -38,7 +38,7 @@ type RouteFinder = Callable[[Session, Binding | None], Route | None]
 class RouteSetup:
     runtime_dir: Callable[[], Path]
     fake_routes: Path | None = None
-    codex_home: Path | None = None
+    codex_home: Callable[[Binding | None], Path | None] = lambda binding: None
     pongs: Pongs = field(default_factory=Pongs)
     endpoints: Mapping[str, EndpointRoute] | None = None
     codex_probes: Probes = field(default_factory=Probes)
@@ -74,7 +74,7 @@ def route_finder(setup: RouteSetup) -> RouteFinder:
         if session.harness in endpoints:
             return endpoints[session.harness]
         if session.harness == "codex":
-            return CodexRoute(codex_socket(binding, setup.codex_home), setup.codex_probes)
+            return CodexRoute(codex_socket(binding, setup.codex_home(binding)), setup.codex_probes)
         return None
 
     return find

@@ -21,7 +21,9 @@ def unused() -> Path:
 
 
 def test_the_real_finder_routes_every_harness(tmp_path: Path, short_tmp: Path) -> None:
-    find = route_finder(RouteSetup(runtime_dir=lambda: short_tmp, codex_home=tmp_path / ".codex"))
+    find = route_finder(
+        RouteSetup(runtime_dir=lambda: short_tmp, codex_home=lambda binding: tmp_path / ".codex")
+    )
     bound = replace(BINDING, app_server_socket="/tmp/per-session.sock")
     pi = find(make_session("p1", harness="pi", pid=11), None)
     claude = find(make_session("c1", harness="claude", pid=22), None)

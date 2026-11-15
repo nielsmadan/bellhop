@@ -28,6 +28,7 @@ from bellhop.transcripts.claude import transcript_of
 type Priority = Literal["later", "next"]
 type Forward = Callable[[str, Priority], str | None]
 type Bounded = Callable[[str, Priority, float], str | None]
+type Registry = Callable[[Path, int], Mapping[str, object] | None]
 
 SERVER_INFO = {"name": "bellhop", "version": "1"}
 CHILD_SOCKET, CHILD_TOKEN = "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN"
@@ -185,9 +186,6 @@ def read_registry(claude_dir: Path, pid: int) -> Mapping[str, object] | None:
 
 def current_session(claude_dir: Path, pid: int) -> SessionInfo:
     return session_info(read_registry(claude_dir, pid), claude_dir)
-
-
-type Registry = Callable[[Path, int], Mapping[str, object] | None]
 
 
 def enclosing_claude(

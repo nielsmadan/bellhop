@@ -26,6 +26,11 @@ FILE_NAME = "bellhop.sqlite"
 EXPIRED_DETAIL = "expired"
 GONE_DETAIL = "session gone"
 REPLACED_DETAIL = "session replaced in its process"
+STARTED_DETAIL = "started with this prompt"
+UNKNOWN_DETAIL = "outcome unknown"
+ABANDONED_DETAIL = "start abandoned: the agent's binding changed while it was starting"
+OPENED_DETAIL = "prompt passed to tmux"
+LAUNCH_ROUTE = "launch"
 
 V1 = (
     "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
@@ -83,9 +88,18 @@ DELIVERABLE = """((state = 'pending' AND urgency != 'hold' AND (target_kind = 's
     OR state = 'sending')"""
 CONFIRMABLE = """state = 'sent' AND transcript_offset IS NOT NULL AND session_id IS NOT NULL
     AND sent_at >= ?"""
-SWEEP_SQL = f"""UPDATE messages SET state = 'sent', detail = 'outcome unknown'
+SWEEP_SQL = f"""UPDATE messages SET state = 'sent', detail = '{UNKNOWN_DETAIL}'
     WHERE {OPEN} AND state = 'sending' AND sent_at < ?"""
 AWAITING_SQL = f"SELECT * FROM messages WHERE {OPEN} AND {CONFIRMABLE} ORDER BY seq"
+LAUNCHED_WHERE = f"""{OPEN} AND state = 'pending' AND target_kind = 'agent' AND target = ?
+    AND route = ?"""
+ABANDONED_WHERE = f"""{OPEN} AND state = 'pending' AND target_kind = 'agent' AND route = ?
+    AND NOT EXISTS (SELECT 1 FROM bindings WHERE bindings.agent = messages.target
+    AND bindings.state = 'starting')"""
+ABANDON_SETS = """state = CASE WHEN detail IS NULL THEN 'failed' ELSE 'sent' END,
+    sent_at = CASE WHEN detail IS NULL THEN sent_at ELSE ? END,
+    finished_at = CASE WHEN detail IS NULL THEN ? ELSE finished_at END,
+    detail = CASE WHEN detail IS NULL THEN ? ELSE ? END"""
 HAS_WORK_SQL = f"""SELECT 1 FROM messages WHERE {OPEN} AND ({DELIVERABLE} OR ({CONFIRMABLE}))
     UNION ALL SELECT 1 FROM bindings WHERE state = 'starting' LIMIT 1"""
 OUTCOME_STATES: Mapping[PushOutcome, MessageState] = {
@@ -232,34 +246,38 @@ def insert_message(conn: sqlite3.Connection, message: Message) -> Message:
             existing = find_by_key(conn, message.key)
             if existing is not None:
                 return existing
-        conn.execute(
-            """INSERT INTO messages (id, key, target_kind, target, harness, title, sender, body,
+        put_message(conn, message)
+    return get_message(conn, message.id)
+
+
+def put_message(conn: sqlite3.Connection, message: Message) -> None:
+    conn.execute(
+        """INSERT INTO messages (id, key, target_kind, target, harness, title, sender, body,
             urgency, degraded_from, wake, state, route, detail, session_id, transcript_offset,
             created_at, sent_at, confirmed_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                message.id,
-                message.key,
-                message.target_kind,
-                message.target,
-                message.harness,
-                message.title,
-                message.sender,
-                message.body,
-                message.urgency,
-                message.degraded_from,
-                int(message.wake),
-                message.state,
-                message.route,
-                message.detail,
-                message.session_id,
-                message.transcript_offset,
-                iso(message.created_at),
-                None,
-                None,
-            ),
-        )
-    return get_message(conn, message.id)
+        (
+            message.id,
+            message.key,
+            message.target_kind,
+            message.target,
+            message.harness,
+            message.title,
+            message.sender,
+            message.body,
+            message.urgency,
+            message.degraded_from,
+            int(message.wake),
+            message.state,
+            message.route,
+            message.detail,
+            message.session_id,
+            message.transcript_offset,
+            iso(message.created_at),
+            None,
+            None,
+        ),
+    )
 
 
 def find_by_key(conn: sqlite3.Connection, key: str) -> Message | None:
@@ -540,6 +558,100 @@ def update_bindings(
             if previous.get(binding.agent) != binding:
                 put_binding(conn, binding)
     return after
+
+
+def begin_start(
+    conn: sqlite3.Connection, binding: Binding, message: Message | None, now: datetime
+) -> tuple[Message | None, Binding | None]:
+    with write(conn):
+        existing = find_by_key(conn, message.key) if message and message.key else None
+        if existing is not None:
+            return existing, None
+        conn.execute(
+            f"UPDATE messages SET {ABANDON_SETS} WHERE {LAUNCHED_WHERE}",
+            [*abandon_values(now), binding.agent, LAUNCH_ROUTE],
+        )
+        put_binding(conn, binding)
+        if message is not None:
+            put_message(conn, message)
+        stored = get_binding(conn, binding.agent)
+    return (get_message(conn, message.id) if message is not None else None), stored
+
+
+def launch_message(conn: sqlite3.Connection, agent: str) -> Message | None:
+    row = conn.execute(
+        f"SELECT * FROM messages WHERE {LAUNCHED_WHERE} ORDER BY seq LIMIT 1",
+        (agent, LAUNCH_ROUTE),
+    ).fetchone()
+    return _message(row) if row else None
+
+
+def _settle_start(
+    conn: sqlite3.Connection, before: Binding, after: Binding, sets: str, values: list[object]
+) -> bool:
+    with write(conn):
+        if get_binding(conn, before.agent) != before:
+            return False
+        put_binding(conn, after)
+        conn.execute(
+            f"UPDATE messages SET {sets} WHERE {LAUNCHED_WHERE}",
+            [*values, before.agent, LAUNCH_ROUTE],
+        )
+    return True
+
+
+def open_start(conn: sqlite3.Connection, before: Binding, after: Binding) -> bool:
+    return _settle_start(
+        conn, before, after, "detail = ?", [f"{OPENED_DETAIL} {after.tmux_target}"]
+    )
+
+
+def finish_start(conn: sqlite3.Connection, before: Binding, after: Binding, now: datetime) -> bool:
+    return _settle_start(
+        conn,
+        before,
+        after,
+        "state = 'sent', session_id = ?, sent_at = ?, detail = ?",
+        [after.session_id, iso(now), STARTED_DETAIL],
+    )
+
+
+def fail_start(
+    conn: sqlite3.Connection, before: Binding, after: Binding, now: datetime, *, prompted: bool
+) -> bool:
+    if prompted:
+        return _settle_start(
+            conn,
+            before,
+            after,
+            "state = 'sent', session_id = ?, sent_at = ?, detail = ?",
+            [after.session_id, iso(now), f"{UNKNOWN_DETAIL}; {after.detail}"],
+        )
+    return _settle_start(
+        conn,
+        before,
+        after,
+        "state = 'failed', detail = ?, finished_at = ?",
+        [after.detail, iso(now)],
+    )
+
+
+def abandon_starts(conn: sqlite3.Connection, now: datetime) -> int:
+    found = conn.execute(
+        f"SELECT 1 FROM messages WHERE {ABANDONED_WHERE} LIMIT 1", (LAUNCH_ROUTE,)
+    ).fetchone()
+    if found is None:
+        return 0
+    with write(conn):
+        cursor = conn.execute(
+            f"UPDATE messages SET {ABANDON_SETS} WHERE {ABANDONED_WHERE}",
+            [*abandon_values(now), LAUNCH_ROUTE],
+        )
+    return cursor.rowcount
+
+
+def abandon_values(now: datetime) -> list[object]:
+    return [iso(now), iso(now), ABANDONED_DETAIL, f"{UNKNOWN_DETAIL}; {ABANDONED_DETAIL}"]
 
 
 def set_degraded(conn: sqlite3.Connection, message_id: str, degraded_from: Urgency) -> Message:

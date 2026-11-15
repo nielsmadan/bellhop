@@ -98,8 +98,8 @@ class Context:
     def readers(self) -> ReaderFinder:
         return self.wiring.readers
 
-    def kick(self) -> None:
-        if self._kicked:
+    def kick(self, *, again: bool = False) -> None:
+        if self._kicked and not again:
             return
         try:
             if not (state_dir(self.env) / FILE_NAME).exists():

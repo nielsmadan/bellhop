@@ -1,6 +1,6 @@
 import re
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -11,6 +11,7 @@ from bellhop.paths import home as home_dir
 from bellhop.paths import xdg_home
 
 NAME = re.compile(r"[a-z0-9][a-z0-9_-]*")
+VARIABLE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 TOP_KEYS = frozenset({"runtime_dir", "tmux_socket", "agents"})
 AGENT_KEYS = frozenset({"harness", "cwd", "command", "env", "server_command"})
 
@@ -55,6 +56,13 @@ def _strings(path: Path, key: str, value: object) -> tuple[str, ...]:
     return tuple(value)
 
 
+def _command(path: Path, key: str, value: object) -> tuple[str, ...]:
+    argv = _strings(path, key, value)
+    if argv and "=" in argv[0]:
+        raise _fail(path, key, "must start with a program, not an assignment")
+    return argv
+
+
 def _text(path: Path, key: str, value: object) -> str:
     if not isinstance(value, str):
         raise _fail(path, key, "must be a string")
@@ -80,12 +88,15 @@ def _agent(path: Path, name: str, raw: object, home: Path) -> AgentConfig:
     env = raw.get("env", {})
     if not isinstance(env, dict) or not all(isinstance(v, str) for v in env.values()):
         raise _fail(path, f"{key}.env", "must be a table of strings")
+    named = next((name for name in env if not VARIABLE.fullmatch(name)), None)
+    if named is not None:
+        raise _fail(path, f"{key}.env", f"'{named}' is not an environment variable name")
     cwd = raw.get("cwd")
     return AgentConfig(
         name=name,
         harness=harness,
         cwd=_expand(_text(path, f"{key}.cwd", cwd), home) if cwd is not None else None,
-        command=_strings(path, f"{key}.command", raw.get("command", [])),
+        command=_command(path, f"{key}.command", raw.get("command", [])),
         env={k: str(_expand(v, home)) if v.startswith("~") else v for k, v in env.items()},
         server_command=_strings(path, f"{key}.server_command", raw.get("server_command", [])),
     )
@@ -100,15 +111,44 @@ def parse_config(path: Path, text: str, home: Path) -> Config:
     runtime = raw.get("runtime_dir")
     if runtime is not None and not Path(_text(path, "runtime_dir", runtime)).is_absolute():
         raise _fail(path, "runtime_dir", f"must be an absolute path; got '{runtime}'")
+    socket = _text(path, "tmux_socket", raw.get("tmux_socket", ""))
+    if "/" in socket and not Path(socket).is_absolute():
+        raise _fail(path, "tmux_socket", f"a socket path must be absolute; got '{socket}'")
     agents = raw.get("agents", {})
     if not isinstance(agents, dict):
         raise _fail(path, "agents", "must be a table")
     return Config(
         path=path,
         runtime_dir=Path(runtime) if runtime is not None else None,
-        tmux_socket=_text(path, "tmux_socket", raw.get("tmux_socket", "")),
+        tmux_socket=socket,
         agents={name: _agent(path, name, value, home) for name, value in agents.items()},
     )
+
+
+def watched_config(
+    env: Mapping[str, str], on_error: Callable[[BellhopError], None] | None = None
+) -> Callable[[], Config]:
+    path = config_path(env)
+    seen: dict[str, tuple[tuple[int, int] | None, Config]] = {}
+
+    def current() -> Config:
+        try:
+            info = path.stat()
+            stamp: tuple[int, int] | None = (info.st_mtime_ns, info.st_size)
+        except OSError:
+            stamp = None
+        known = seen.get("config")
+        if known is None or known[0] != stamp:
+            try:
+                seen["config"] = (stamp, load_config(env))
+            except BellhopError as error:
+                if known is None or on_error is None:
+                    raise
+                on_error(error)
+                seen["config"] = (stamp, known[1])
+        return seen["config"][1]
+
+    return current
 
 
 def load_config(env: Mapping[str, str]) -> Config:

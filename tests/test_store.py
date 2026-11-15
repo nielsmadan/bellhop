@@ -13,6 +13,7 @@ import pytest
 from bellhop.errors import BellhopError
 from bellhop.models import Binding, PushResult
 from bellhop.store import (
+    ABANDONED_DETAIL,
     AWAITING_SQL,
     HAS_WORK_SQL,
     SCHEMA_VERSION,
@@ -20,20 +21,26 @@ from bellhop.store import (
     V1,
     V2,
     Push,
+    abandon_starts,
     awaiting_confirmation,
+    begin_start,
     bindings,
     claim,
     confirm,
     enable_wal,
     expire_sessions,
     fail_pending,
+    fail_start,
+    finish_start,
     get_binding,
     get_messages,
     has_work,
     holds_waiting,
     insert_message,
+    launch_message,
     older_pending,
     oldest_pending,
+    open_start,
     pending_targets,
     prune,
     record_outcome,
@@ -412,3 +419,110 @@ def test_a_version_2_store_gains_the_transcript_column(tmp_path: Path) -> None:
 
     assert schema_version(conn) == 3
     assert get_messages(conn, [stored.id])[0].transcript == Path("/t/s1.jsonl")
+
+
+STARTING = Binding(
+    "enki", "claude", "starting", "s1", None, None, None, None, "enki:%0", "launch", None, NOW
+)
+
+
+def started(conn: sqlite3.Connection, number: int = 1, **changes: object) -> None:
+    message = make_message(number, target_kind="agent", target="enki", route="launch", **changes)
+    begin_start(conn, STARTING, message, NOW)
+
+
+def test_a_start_writes_its_binding_and_first_message_together(tmp_path: Path) -> None:
+    conn = connect(tmp_path / "s.sqlite")
+
+    message, binding = begin_start(
+        conn, STARTING, make_message(1, target_kind="agent", target="enki", route="launch"), NOW
+    )
+
+    assert (binding, message is not None and message.route) == (STARTING, "launch")
+    assert launch_message(conn, "enki") == message
+
+
+def test_a_start_with_a_known_key_writes_nothing_and_returns_the_stored_message(
+    tmp_path: Path,
+) -> None:
+    conn = connect(tmp_path / "s.sqlite")
+    known = insert_message(conn, make_message(1, key="k1"))
+
+    message, binding = begin_start(
+        conn, STARTING, make_message(2, key="k1", target_kind="agent", target="enki"), NOW
+    )
+
+    assert (message, binding, get_binding(conn, "enki")) == (known, None, None)
+
+
+def test_finishing_a_start_marks_its_prompt_sent_and_the_binding_live(tmp_path: Path) -> None:
+    conn = connect(tmp_path / "s.sqlite")
+    started(conn)
+    live = replace(STARTING, state="live", pid=4242)
+
+    assert finish_start(conn, STARTING, live, NOW) is True
+    [message] = get_messages(conn, ["bh_000000000001"])
+    assert (message.state, message.detail, message.session_id) == (
+        "sent",
+        "started with this prompt",
+        "s1",
+    )
+    assert get_binding(conn, "enki") == live
+
+
+@pytest.mark.parametrize(
+    ("prompted", "state", "detail"),
+    [(True, "sent", "outcome unknown; start failed: x"), (False, "failed", "start failed: x")],
+)
+def test_a_failed_start_settles_its_prompt_by_whether_the_agent_got_it(
+    tmp_path: Path, prompted: bool, state: str, detail: str
+) -> None:
+    conn = connect(tmp_path / "s.sqlite")
+    started(conn)
+    failed = replace(STARTING, state="failed", detail="start failed: x")
+
+    fail_start(conn, STARTING, failed, NOW, prompted=prompted)
+
+    [message] = get_messages(conn, ["bh_000000000001"])
+    assert (message.state, message.detail) == (state, detail)
+
+
+def test_a_start_whose_binding_changed_meanwhile_is_not_settled(tmp_path: Path) -> None:
+    conn = connect(tmp_path / "s.sqlite")
+    started(conn)
+    rebound = replace(STARTING, state="live", cause="bind")
+    save_binding(conn, rebound)
+
+    settled = finish_start(conn, STARTING, replace(STARTING, state="live"), NOW)
+
+    assert (settled, get_binding(conn, "enki")) == (False, rebound)
+    assert launch_message(conn, "enki") is not None
+
+
+def test_only_launch_messages_of_agents_no_longer_starting_are_abandoned(tmp_path: Path) -> None:
+    conn = connect(tmp_path / "s.sqlite")
+    started(conn)
+    abandoned_before = abandon_starts(conn, NOW)
+    save_binding(conn, replace(STARTING, state="live"))
+
+    abandoned = abandon_starts(conn, NOW)
+
+    [message] = get_messages(conn, ["bh_000000000001"])
+    assert (abandoned_before, abandoned, message.state, message.detail) == (
+        0,
+        1,
+        "failed",
+        ABANDONED_DETAIL,
+    )
+
+
+def test_an_abandoned_prompt_that_reached_tmux_is_outcome_unknown(tmp_path: Path) -> None:
+    conn = connect(tmp_path / "s.sqlite")
+    started(conn)
+    open_start(conn, STARTING, replace(STARTING, tmux_target="-L t enki:%0"))
+    save_binding(conn, replace(STARTING, state="live"))
+
+    abandon_starts(conn, NOW)
+
+    [message] = get_messages(conn, ["bh_000000000001"])
+    assert (message.state, message.detail) == ("sent", f"outcome unknown; {ABANDONED_DETAIL}")

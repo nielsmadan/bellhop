@@ -5,12 +5,11 @@ harness's own in-process route, at one of three urgency levels, and start a stop
 asked.
 
 Status: early development. The store, the drainer and every command below work against
-hooklinesinker, except `send --wake`, which answers `no_route` (exit 4) until launching lands. Pi
-sessions are reachable through bellhop's Pi extension, and Codex sessions attached to an app server
-(the shared daemon, which a plain `codex` starts by default) through its JSON-RPC socket; a
-stand-alone `codex --no-daemon` has no route. Claude sessions are reachable through bellhop's relay,
-an MCP server the user adds once; a Claude session without it has no route and `send` answers
-`no_route` (or stores a `hold` with `--or-hold`).
+hooklinesinker. Pi sessions are reachable through bellhop's Pi extension, and Codex sessions
+attached to an app server (the shared daemon, which a plain `codex` starts by default) through its
+JSON-RPC socket; a stand-alone `codex --no-daemon` has no route. Claude sessions are reachable
+through bellhop's relay, an MCP server the user adds once; a Claude session without it has no route
+and `send` answers `no_route` (or stores a `hold` with `--or-hold`).
 
 Messages are unauthenticated: everything runs as one user, and sender names are self-asserted.
 
@@ -31,6 +30,7 @@ bellhop sessions [--json]                           # live Claude, Codex and Pi 
 bellhop whoami [--json]
 bellhop agents [--json]
 bellhop bind <agent> [--json]                       # bind the calling session to a name
+bellhop launch <agent> [--prompt TEXT] [--from NAME] [--key KEY] [--cause TEXT] [--no-wait] [--json]
 bellhop integration show <claude|pi> [--json]       # what to install, and where
 bellhop integration export <claude|pi> --to DIR     # copy the Pi extension or Claude's MCP config to DIR
 bellhop doctor [--prune] [--json]
@@ -44,7 +44,10 @@ Urgency: `now` pushes at once, mid-turn included; `idle` (the default) delivers 
 turn ends; `hold` is never pushed and is read with `bellhop inbox`. Messages that have to wait are
 delivered by a background drainer that bellhop starts on its own and that exits when nothing
 deliverable is left; a message to an agent with no live session waits in the store, and binding
-that agent starts the drainer again. State lives in `$XDG_STATE_HOME/bellhop/bellhop.sqlite`;
+that agent starts the drainer again. `--wake` (and `bellhop launch`) start a configured agent that
+is not running in a detached tmux session, with a scrubbed environment and the message as its
+first prompt; [docs/user/agents.md](docs/user/agents.md) covers the config, the `command`
+wrapper each harness needs, and what happens when a start fails. State lives in `$XDG_STATE_HOME/bellhop/bellhop.sqlite`;
 agents are configured in `$XDG_CONFIG_HOME/bellhop/config.toml`. Every `--json` object is described in
 [docs/user/json.md](docs/user/json.md).
 

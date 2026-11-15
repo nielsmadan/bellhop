@@ -67,8 +67,9 @@ extension and Claude's MCP config.
   `transcripts/pi` reads Pi session files incrementally and counts the envelope prefix only at the
   start of an entry the session received as input. `routes/codex` talks JSON-RPC over a
   WebSocket on the app server's unix socket (`codex_rpc`, layer 1): the binding's
-  `app_server_socket` (recorded by `bind` from the binding session's `CODEX_HOME`), else
-  `$CODEX_HOME/app-server-control/app-server-control.sock` (the shared daemon), followed only to a
+  `app_server_socket` (recorded by `bind` from the binding session's `CODEX_HOME`, or by `launch`
+  for the agent's own server), else `$CODEX_HOME/app-server-control/app-server-control.sock` (the
+  shared daemon; `CODEX_HOME` from a configured agent's `env` via `wiring.homes_env`), followed only to a
   socket the user owns in a private directory. `now` steers a running turn (`turn/steer`, ADR
   0004); a thread waiting on an approval or a question is busy for every push. `transcripts/codex` finds the rollout by `rollout-*-<thread-id>.jsonl` under
   `$CODEX_HOME/sessions`, only in the thread's UUIDv7 creation day and the days either side. A Codex binding is keyed by its
@@ -78,6 +79,17 @@ extension and Claude's MCP config.
   (`wire(env, config) -> Wiring`), used by `cli/context` and the drainer. Both finders take the
   session and its live binding (`targets.binding_for`; the agent's binding for an agent target);
   the Codex route keys on it.
+- `allowlist`: the environment variables a launched agent and the tmux client may inherit.
+- `launch`, `readiness`, `tmux`, `codex_session`: starting agents (`bellhop launch`, `send
+  --wake`). `launch` builds the child's argv and its allowlisted environment (`/usr/bin/env -i`,
+  never a shell), decides per agent under a `flock` whether to start, queue or send, and checks a
+  `starting` binding for the drainer (`start_checker`: the pane through `tmux`, startup screens
+  through `readiness`, hls listing and the route; a Codex thread through its own app server's
+  `thread/read` preview). `tmux` talks only to the configured server and never reuses a session
+  name. `codex_session` is `bellhop _codex_session`, which runs a Codex app server and TUI and
+  stops the server when the TUI exits. `readiness` mirrors `testing/screens` and is pinned to it
+  by a parity test. `cli/waking` holds the CLI side; `store.begin_start`, `finish_start` and
+  `fail_start` change the binding and the first message (route `launch`) together.
 - `_integrations/pi/bellhop.ts`: the Pi extension, shipped in the wheel. `bellhop integration
   show pi` prints where it is and where Pi loads extensions; `export pi --to DIR` copies it.
   Its runtime-dir choice mirrors `runtime.runtime_dir` and is pinned by a parity test.
@@ -94,13 +106,17 @@ extension and Claude's MCP config.
   peer, channel or plugin entry (a `user` record or a `queued_command` attachment) whose text,
   after Claude's peer wrapper line, starts with the envelope prefix.
 - `drain`: the user-wide background drainer (`bellhop _drain`, one `flock`), which pushes waiting
-  messages and confirms sent ones. Its loop takes its clock, hls, routes, readers and process table
-  as arguments, and one failing target never stops the others. It is spawned with `python -I` from
+  messages, confirms sent ones and completes starts (`Deps.starts`, `launch.start_checker`; a
+  start whose check keeps raising fails at its 90 s deadline; `store.abandon_starts` each tick).
+  Its loop takes its clock, hls, routes, readers, process table and start check as arguments, and
+  one failing target never stops the others. It is spawned with `python -I` from
   `/`, without the caller's session-identity variables, and logs to `drain.log` (rotated at 1 MiB).
   `follow_bindings` updates bindings in one write transaction for the drainer and the CLI.
 - `cli`: `parsing`, `presentation`, `context` (lazy config, store, sessions, process table,
-  bindings; reading them starts nothing) and one module per command family (`messages`, `info`,
-  `integration`, `doctor`), wired in `dispatch` and `cli/__init__.py`. `dispatch` starts the
+  bindings; reading them starts nothing) and one module per command family (`messages`,
+  `launching`, `info`, `integration`, `doctor`), wired in `dispatch`; `command` parses and reports
+  errors. `cli/__init__.py` holds only `main`, which imports lazily so `_relay`, `_drain` and
+  `_codex_session` start without loading the command modules. `dispatch` starts the
   drainer (at most once per command, and not before `doctor`, which checks for it itself) before
   every command when the store has deliverable work (`store.DELIVERABLE`: messages to an agent without a
   live or starting binding are not), `send` and `bind` again after they add work; a failed start

@@ -17,6 +17,7 @@ from bellhop.errors import BellhopError
 from bellhop.identity import alive
 from bellhop.identity import whoami as identify_caller
 from bellhop.jsonout import agent_object, ok_payload, session_object, whoami_object
+from bellhop.launch import agent_lock
 from bellhop.models import Binding, Harness, Session
 from bellhop.routes.codex import daemon_socket
 from bellhop.store import pending_count, save_binding_unless
@@ -173,9 +174,20 @@ def bind(args: argparse.Namespace, ctx: Context) -> int:
         detail=None,
         updated_at=ctx.now(),
     )
-    held = save_binding_unless(
-        ctx.conn, binding, lambda existing: _bound_elsewhere(existing, session, ctx)
-    )
+    with agent_lock(ctx.env, name):
+        held = save_binding_unless(
+            ctx.conn,
+            binding,
+            lambda existing: (
+                existing is not None
+                and (existing.state == "starting" or _bound_elsewhere(existing, session, ctx))
+            ),
+        )
+    if held is not None and held.state == "starting":
+        raise BellhopError(
+            f"'{name}' is starting; wait for it to go live, or run `bellhop launch {name}`",
+            code=BINDING_CONFLICT,
+        )
     if held is not None:
         raise BellhopError(
             f"'{name}' is bound to live session {held.session_id}", code=BINDING_CONFLICT

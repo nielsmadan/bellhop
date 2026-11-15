@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from bellhop.config import AgentConfig, Config, load_config, parse_config
+from bellhop.config import AgentConfig, Config, load_config, parse_config, watched_config
 from bellhop.errors import BellhopError
 
 FULL = """
@@ -65,6 +65,18 @@ def test_every_key_is_read_and_home_is_expanded(tmp_path: Path) -> None:
             "[agents.enki]\nharness = 'pi'\nenv = { A = 1 }",
             "agents.enki.env: must be a table of strings",
         ),
+        (
+            "[agents.enki]\nharness = 'pi'\nenv = { 'A-B' = '1' }",
+            "agents.enki.env: 'A-B' is not an environment variable name",
+        ),
+        (
+            "[agents.enki]\nharness = 'pi'\ncommand = ['X=1', 'pi']",
+            "agents.enki.command: must start with a program, not an assignment",
+        ),
+        (
+            "tmux_socket = 'run/tmux.sock'",
+            "tmux_socket: a socket path must be absolute; got 'run/tmux.sock'",
+        ),
         ("agents = 3", "agents: must be a table"),
         ("tmux_socket = 3", "tmux_socket: must be a string"),
         ("not toml =", "toml:"),
@@ -77,3 +89,30 @@ def test_invalid_config_names_the_file_and_key(text: str, message: str) -> None:
     assert str(caught.value).startswith(f"/c/config.toml: {message}")
     assert caught.value.code == "invalid_config"
     assert caught.value.exit_code == 2
+
+
+def test_a_watched_config_follows_edits_to_the_file(tmp_path: Path) -> None:
+    env = {"HOME": str(tmp_path), "XDG_CONFIG_HOME": str(tmp_path / "config")}
+    path = tmp_path / "config" / "bellhop" / "config.toml"
+    path.parent.mkdir(parents=True)
+    path.write_text('tmux_socket = "one"\n')
+    current = watched_config(env)
+    first = current().tmux_socket
+    path.write_text('tmux_socket = "two-two"\n[agents.enki]\nharness = "pi"\n')
+
+    assert (first, current().tmux_socket, sorted(current().agents)) == ("one", "two-two", ["enki"])
+
+
+def test_a_bad_edit_keeps_the_last_good_config_and_is_reported_once(tmp_path: Path) -> None:
+    env = {"HOME": str(tmp_path), "XDG_CONFIG_HOME": str(tmp_path / "config")}
+    path = tmp_path / "config" / "bellhop" / "config.toml"
+    path.parent.mkdir(parents=True)
+    path.write_text('tmux_socket = "good"\n')
+    errors: list[str] = []
+    current = watched_config(env, on_error=lambda error: errors.append(str(error)))
+    current()
+    path.write_text("[agents.half\n")
+
+    sockets = [current().tmux_socket, current().tmux_socket]
+
+    assert (sockets, len(errors)) == (["good", "good"], 1)

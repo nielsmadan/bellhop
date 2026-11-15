@@ -14,6 +14,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         from bellhop.drain import main as drain_main
 
         return drain_main(os.environ)
+    if arguments[:1] == ["_codex_session"]:
+        from bellhop.codex_session import main as codex_session_main
+
+        return codex_session_main(arguments[1:], os.environ)
     from bellhop.cli.command import run_command
 
     return run_command(arguments)

@@ -240,6 +240,12 @@ class Client:
         data = self.call("thread/loaded/list", {}).get("data")
         return [str(item) for item in data] if isinstance(data, list) else []
 
+    def preview(self, thread_id: str) -> str:
+        read = self.call("thread/read", {"threadId": thread_id, "includeTurns": False})
+        thread = read.get("thread")
+        preview = thread.get("preview") if isinstance(thread, dict) else None
+        return preview if isinstance(preview, str) else ""
+
     def turn(self, thread_id: str) -> Turn:
         try:
             known = thread_status(
