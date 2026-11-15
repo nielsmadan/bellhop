@@ -1,0 +1,8 @@
+{"type": "session", "version": 3, "id": "9f1d2c3b-0000-4000-8000-00000000pi01", "timestamp": "2026-11-14T09:00:00.000Z", "cwd": "/work/pi"}
+{"type": "message", "id": "a1", "parentId": null, "timestamp": "2026-11-14T09:00:01.000Z", "message": {"role": "user", "content": [{"type": "text", "text": "hello"}]}}
+{"type": "message", "id": "a2", "parentId": "a1", "timestamp": "2026-11-14T09:00:02.000Z", "message": {"role": "assistant", "content": [{"type": "text", "text": "I saw [bellhop bh_aaaaaaaaaaaa from enki] somewhere"}, {"type": "toolCall", "id": "t1", "name": "bash", "arguments": {"command": "echo '[bellhop bh_ffffffffffff from enki]'"}}], "stopReason": "toolUse"}}
+{"type": "message", "id": "a3", "parentId": "a2", "timestamp": "2026-11-14T09:00:03.000Z", "message": {"role": "toolResult", "toolCallId": "t1", "content": [{"type": "text", "text": "[bellhop bh_bbbbbbbbbbbb from enki] from a file"}]}}
+{"type": "custom", "customType": "probe", "data": {"note": "[bellhop bh_gggggggggggg from enki]"}, "id": "a4", "parentId": "a3", "timestamp": "2026-11-14T09:00:04.000Z"}
+{"type": "message", "id": "a5", "parentId": "a4", "timestamp": "2026-11-14T09:00:05.000Z", "message": {"role": "user", "content": [{"type": "text", "text": "[bellhop bh_cccccccccccc from enki] please look"}]}}
+{"type": "message", "id": "a6", "parentId": "a5", "timestamp": "2026-11-14T09:00:06.000Z", "message": {"role": "user", "content": "fwd: [bellhop bh_dddddddddddd from enki] quoted"}}
+{"type": "custom_message", "customType": "probe", "content": "[bellhop bh_eeeeeeeeeeee from enki] injected", "display": true, "id": "a7", "parentId": "a6", "timestamp": "2026-11-14T09:00:07.000Z"}

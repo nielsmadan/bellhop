@@ -490,3 +490,74 @@ def test_signals_during_teardown_do_not_cut_it_short(
     assert run.leftovers == []
     assert not run.layout.runtime_dir.exists()
     assert signal.getsignal(signal.SIGINT) is before
+
+
+def test_the_sweep_notes_survive_a_with_run(tmp_path: Path) -> None:
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (tmp_path / "cache").mkdir()
+    (tmp_path / "cache" / "20261113-000000-aaaa").symlink_to(elsewhere)
+    run = fake_run(tmp_path, run_id="20261113-000000-bbbb")
+
+    with run:
+        pass
+
+    assert run.leftovers == [
+        f"skipped {tmp_path / 'cache' / '20261113-000000-aaaa'}: it is a symlink"
+    ]
+
+
+def test_the_sweep_does_not_follow_a_symlinked_codex_home_inside_an_earlier_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    earlier = fake_run(tmp_path, run_id="20261113-000000-aaaa")
+    real_codex = tmp_path / "user" / ".codex"
+    (real_codex / "app-server-daemon").mkdir(parents=True)
+    (real_codex / "app-server-daemon" / "daemon.pid").write_text("{}")
+    earlier.layout.home.mkdir(parents=True, exist_ok=True)
+    earlier.layout.codex_dir.symlink_to(real_codex)
+    run = fake_run(tmp_path, run_id="20261113-000000-bbbb")
+    scanned: list[Path] = []
+    monkeypatch.setattr("bellhop.testing.run.remove_codex_sockets", scanned.append)
+
+    notes = run.sweep_earlier_runs()
+
+    assert real_codex / "app-server-daemon" not in {path.resolve() for path in scanned}
+    prefix = "skipped the codex cleanup of 20261113-000000-aaaa"
+    daemon_pid = earlier.layout.codex_dir / "app-server-daemon" / "daemon.pid"
+    assert notes == [
+        f"{prefix}: {earlier.layout.codex_dir} is or lies under a symlink",
+        f"{prefix}: {earlier.layout.codex_dir / 'app-server-daemon'} is or lies under a symlink",
+        f"{prefix}: {daemon_pid} is or lies under a symlink",
+    ]
+    assert (real_codex / "app-server-daemon" / "daemon.pid").exists()
+
+
+def test_the_sweep_skips_an_earlier_run_owned_by_another_uid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    earlier = fake_run(tmp_path, run_id="20261113-000000-aaaa")
+    run = fake_run(tmp_path, run_id="20261113-000000-bbbb")
+    owner = earlier.layout.root.lstat().st_uid
+    monkeypatch.setattr("bellhop.testing.run.os.getuid", lambda: owner + 1)
+
+    notes = run.sweep_earlier_runs()
+
+    assert notes == [f"skipped {earlier.layout.root}: it is owned by uid {owner}"]
+
+
+def test_the_sweep_does_not_stop_a_daemon_whose_pid_file_is_a_link(tmp_path: Path) -> None:
+    earlier = fake_run(tmp_path, run_id="20261113-000000-aaaa")
+    daemon_dir = earlier.layout.codex_dir / "app-server-daemon"
+    daemon_dir.mkdir(parents=True)
+    real_pid = tmp_path / "user-daemon.pid"
+    real_pid.write_text("{}")
+    (daemon_dir / "daemon.pid").symlink_to(real_pid)
+    run = fake_run(tmp_path, run_id="20261113-000000-bbbb")
+
+    notes = run.sweep_earlier_runs()
+
+    link = daemon_dir / "daemon.pid"
+    assert notes == [
+        f"skipped the codex cleanup of {earlier.run_id}: {link} is or lies under a symlink"
+    ]

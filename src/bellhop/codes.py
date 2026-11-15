@@ -6,6 +6,7 @@ Code = Literal[
     "binding_conflict",
     "caller_unknown",
     "doctor_failed",
+    "export_failed",
     "hls_unavailable",
     "internal_error",
     "interrupted",
@@ -24,6 +25,7 @@ Code = Literal[
 BINDING_CONFLICT: Code = "binding_conflict"
 CALLER_UNKNOWN: Code = "caller_unknown"
 DOCTOR_FAILED: Code = "doctor_failed"
+EXPORT_FAILED: Code = "export_failed"
 HLS_UNAVAILABLE: Code = "hls_unavailable"
 INTERNAL_ERROR: Code = "internal_error"
 INTERRUPTED: Code = "interrupted"
@@ -50,6 +52,7 @@ EXIT_CODES: Mapping[Code, int] = MappingProxyType(
         BINDING_CONFLICT: FAILURE_EXIT,
         CALLER_UNKNOWN: TARGET_EXIT,
         DOCTOR_FAILED: FAILURE_EXIT,
+        EXPORT_FAILED: FAILURE_EXIT,
         HLS_UNAVAILABLE: HLS_UNAVAILABLE_EXIT,
         INTERNAL_ERROR: FAILURE_EXIT,
         INTERRUPTED: INTERRUPTED_EXIT,

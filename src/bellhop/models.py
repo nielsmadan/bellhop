@@ -68,6 +68,7 @@ class Message:
     detail: str | None
     session_id: str | None
     transcript_offset: int | None
+    transcript: Path | None
     created_at: datetime
     sent_at: datetime | None
     confirmed_at: datetime | None

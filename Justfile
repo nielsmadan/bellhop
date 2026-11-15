@@ -6,10 +6,16 @@ setup:
     @uv sync --locked --all-groups
     @lefthook install
 
-test:
+typescript:
+    @test -f .cache/typescript/node_modules/@earendil-works/pi-coding-agent/dist/index.d.ts -a -f .cache/typescript/node_modules/@types/node/package.json -a -x .cache/typescript/node_modules/typescript/bin/tsc || npm install --prefix .cache/typescript --no-save --ignore-scripts --omit=optional --no-audit --no-fund typescript@5.9.3 @earendil-works/pi-coding-agent@1.5.2 @types/node@26.6.6
+
+package-check:
+    @UV_CACHE_DIR=.cache/uv uv run --locked pytest -q -m packaging
+
+test: typescript
     @uv run --locked pytest -q
 
-coverage:
+coverage: typescript
     @uv run --locked pytest --cov --cov-report=term-missing --cov-report=html --cov-report=xml -q
 
 smoke:

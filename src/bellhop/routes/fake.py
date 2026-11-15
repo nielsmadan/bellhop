@@ -19,6 +19,7 @@ class FakeRoute:
     can_interrupt: bool = True
     queues_until_idle: bool = True
     is_reachable: bool = True
+    is_replaced: bool = False
     busy_answer: bool | None = None
     outcomes: list[str] = field(default_factory=list)
     log: Path | None = None
@@ -27,6 +28,9 @@ class FakeRoute:
 
     def reachable(self, session: Session) -> bool:
         return self.is_reachable
+
+    def replaced(self, session: Session) -> bool:
+        return self.is_replaced
 
     def busy(self, session: Session) -> bool | None:
         return self.busy_answer
@@ -62,6 +66,7 @@ def route_from(settings: Mapping[str, object], log: Path | None) -> FakeRoute | 
         can_interrupt=bool(settings.get("can_interrupt", True)),
         queues_until_idle=bool(settings.get("queues_until_idle", True)),
         is_reachable=bool(settings.get("reachable", True)),
+        is_replaced=bool(settings.get("replaced", False)),
         busy_answer=busy if isinstance(busy, bool) else None,
         outcomes=[str(word) for word in outcomes] if isinstance(outcomes, list) else [],
         log=log,

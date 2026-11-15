@@ -128,3 +128,15 @@ def test_two_sessions_on_the_same_process_are_ambiguous() -> None:
 
     assert caught.value.exit_code == 3
     assert caught.value.candidates == ["x1 (codex, title-x1)", "x2 (codex, title-x2)"]
+
+
+def test_an_unlisted_session_variable_is_exit_3_even_when_another_is_listed() -> None:
+    env = {"CLAUDE_CODE_SESSION_ID": "c1", "CODEX_THREAD_ID": "not-listed"}
+
+    with pytest.raises(BellhopError) as caught:
+        identify(env, [make_session("c1")], TABLE, 6000)
+
+    assert caught.value.code == "caller_unknown"
+    assert (
+        str(caught.value) == "CODEX_THREAD_ID=not-listed is not a live session hooklinesinker lists"
+    )

@@ -26,7 +26,10 @@ test machine-enforces the module dependency contract: layer order, per-module im
 absolute internal imports, and a stdlib-only runtime. `just coverage` is the 80% branch-coverage
 gate. `just check-static` is the lint, cycle and type pass without the suite. `just smoke` runs the
 live tests (`-m smoke`), which are deselected everywhere else. `just setup` installs project
-dependencies and repository hooks; it does not install `bellhop` globally.
+dependencies and repository hooks; it does not install `bellhop` globally. `just typescript`
+(run by `test`, `check` and `coverage`) installs TypeScript, Pi's types and `@types/node` into
+`.cache/typescript` for the Pi extension type-check, which skips only where node is missing.
+`just package-check` builds the wheel (uv cache in `.cache/uv`) and checks it carries the extension.
 
 ## Architecture
 
@@ -48,6 +51,19 @@ dependencies and repository hooks; it does not install `bellhop` globally.
 - `envelope`, `routes`, `transcripts`, `delivery`: the text a session receives, the `Route` and
   `TranscriptReader` protocols (with a fake route for tests), and the delivery rules: claim, push
   outside any transaction, record the outcome, confirm from the receiver's transcript.
+  `routes/unix` is the endpoint-socket client (`ping`, `deliver boundary|interrupt`, one reply
+  line within 2 s; the wire is in `docs/reference/routes.md`); `routes/pi` reaches Pi's extension
+  at `<runtime_dir>/pi-<pid>.sock`. A route may raise `BellhopError` for an unusable runtime dir:
+  `send` lets it fail the command, `sessions` reports it as a warning, the drainer per target.
+  `transcripts/pi` reads Pi session files incrementally and counts the envelope prefix only at the
+  start of an entry the session received as input.
+- `wiring`: the one place that turns env and config into the route and reader setups
+  (`wire(env, config) -> Wiring`), used by `cli/context` and the drainer. Both finders take the
+  session and its live binding (`targets.binding_for`; the agent's binding for an agent target),
+  which the Codex route and reader will key on.
+- `_integrations/pi/bellhop.ts`: the Pi extension, shipped in the wheel. `bellhop integration
+  show pi` prints where it is and where Pi loads extensions; `export pi --to DIR` copies it.
+  Its runtime-dir choice mirrors `runtime.runtime_dir` and is pinned by a parity test.
 - `drain`: the user-wide background drainer (`bellhop _drain`, one `flock`), which pushes waiting
   messages and confirms sent ones. Its loop takes its clock, hls, routes, readers and process table
   as arguments, and one failing target never stops the others. It is spawned with `python -I` from
@@ -55,8 +71,11 @@ dependencies and repository hooks; it does not install `bellhop` globally.
   `follow_bindings` updates bindings in one write transaction for the drainer and the CLI.
 - `cli`: `parsing`, `presentation`, `context` (lazy config, store, sessions, process table,
   bindings; reading them starts nothing) and one module per command family (`messages`, `info`,
-  `doctor`), wired in `dispatch` and `cli/__init__.py`. `dispatch` starts the drainer after a
-  command when the store has work. Text output passes untrusted text through `escape_controls`.
+  `integration`, `doctor`), wired in `dispatch` and `cli/__init__.py`. `dispatch` starts the
+  drainer (at most once per command, and not before `doctor`, which checks for it itself) before
+  every command when the store has deliverable work (`store.DELIVERABLE`: messages to an agent without a
+  live or starting binding are not), `send` and `bind` again after they add work; a failed start
+  is a warning, never an error. Text output passes untrusted text through `escape_controls`.
 - `testing`: the live-smoke isolation helper (also used by callboard's smoke tests). `SmokeRun`
   builds isolated homes under `.cache/smoke/<run>/`, installs an isolated hls consumer and hooks,
   launches Claude, Codex and Pi in prompting mode on `tmux -L bellhop-smoke` with a scrubbed

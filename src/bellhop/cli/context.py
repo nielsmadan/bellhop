@@ -9,11 +9,12 @@ from bellhop.hls import SessionList, list_sessions
 from bellhop.identity import ProcessTable, process_table
 from bellhop.models import Binding
 from bellhop.paths import state_dir
-from bellhop.routes import RouteFinder, route_finder
-from bellhop.store import open_store
-from bellhop.transcripts import ReaderFinder, reader_finder
+from bellhop.routes import RouteFinder
+from bellhop.store import FILE_NAME, open_store
+from bellhop.transcripts import ReaderFinder
+from bellhop.wiring import Wiring, wire
 
-type Starter = Callable[[Mapping[str, str]], bool]
+type Starter = Callable[[Mapping[str, str]], int | None]
 
 
 def utc_now() -> datetime:
@@ -31,6 +32,8 @@ class Context:
     _bindings: list[Binding] | None = None
     _table: ProcessTable | None = None
     _table_read: bool = False
+    _wiring: Wiring | None = None
+    _kicked: bool = False
     warnings: list[str] = field(default_factory=list)
 
     @property
@@ -71,16 +74,30 @@ class Context:
         self._bindings = None
 
     @property
+    def wiring(self) -> Wiring:
+        if self._wiring is None:
+            self._wiring = wire(self.env, lambda: self.config)
+        return self._wiring
+
+    @property
     def routes(self) -> RouteFinder:
-        return route_finder(self.env)
+        return self.wiring.routes
 
     @property
     def readers(self) -> ReaderFinder:
-        return reader_finder(self.env)
+        return self.wiring.readers
 
     def kick(self) -> None:
-        if self._conn is not None and drain_work(self._conn, self.now()):
-            self.starter(self.env)
+        if self._kicked:
+            return
+        try:
+            if not (state_dir(self.env) / FILE_NAME).exists():
+                return
+            if drain_work(self.conn, self.now()):
+                self._kicked = self.starter(self.env) is not None
+        except Exception as error:  # noqa: BLE001
+            self._kicked = True
+            self.warnings.append(f"cannot start the drainer: {error}")
 
     def close(self) -> None:
         if self._conn is not None:

@@ -1,7 +1,10 @@
+import json
+from pathlib import Path
+
 import pytest
 
 from bellhop.cli import main
-from conftest import ALPHA, BETA, Bell, check_golden
+from conftest import ALPHA, BETA, Bell, FakeHls, check_golden, pong_server
 
 
 def test_sessions_report_agent_route_reachability_and_pending(
@@ -150,3 +153,85 @@ def test_whoami_text_escapes_a_title_with_terminal_controls(
     main(["whoami"])
 
     assert capsys.readouterr().out == f"{ALPHA} claude a\\x1b[2Jb -\n"
+
+
+def test_sessions_ping_a_pi_extension_for_reachable_and_route(
+    fake_hls: FakeHls,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    short_tmp: Path,
+) -> None:
+    runtime = short_tmp / "rt"
+    runtime.mkdir(mode=0o700)
+    monkeypatch.setenv("BELLHOP_RUNTIME_DIR", str(runtime))
+    process = {"pid": 5150, "startedAt": "2026-11-13T09:00:00Z"}
+    fake_hls.respond(
+        [FakeHls.record("pi", "p-live", process=process), FakeHls.record("pi", "p-quiet")]
+    )
+    with pong_server(runtime / "pi-5150.sock"):
+        assert main(["sessions", "--json"]) == 0
+
+    rows = {row["session_id"]: row for row in json.loads(capsys.readouterr().out)["sessions"]}
+    assert (rows["p-live"]["reachable"], rows["p-live"]["route"]) == (True, "pi-extension")
+    assert (rows["p-quiet"]["reachable"], rows["p-quiet"]["route"]) == (False, None)
+
+
+def test_sessions_list_every_harness_when_the_runtime_dir_is_unsafe(
+    fake_hls: FakeHls,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    runtime = tmp_path / "rt"
+    runtime.mkdir(mode=0o755)
+    runtime.chmod(0o755)
+    monkeypatch.setenv("BELLHOP_RUNTIME_DIR", str(runtime))
+    fake_hls.respond([FakeHls.record("pi", "p1"), FakeHls.record("claude", "c1")])
+
+    assert main(["sessions", "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert [(r["session_id"], r["reachable"]) for r in payload["sessions"]] == [
+        ("p1", False),
+        ("c1", False),
+    ]
+    assert payload["warnings"] == [
+        f"cannot reach pi sessions: runtime directory {runtime} has mode 0755; it must be 0700"
+    ]
+
+
+def test_send_to_pi_with_an_unsafe_runtime_dir_is_exit_1(
+    fake_hls: FakeHls,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    runtime = tmp_path / "rt"
+    runtime.mkdir(mode=0o755)
+    runtime.chmod(0o755)
+    monkeypatch.setenv("BELLHOP_RUNTIME_DIR", str(runtime))
+    fake_hls.respond([FakeHls.record("pi", "p1")])
+
+    assert main(["send", "p1", "hi", "--from", "x", "--json"]) == 1
+
+    assert json.loads(capsys.readouterr().out)["error"]["code"] == "runtime_dir_unsafe"
+
+
+@pytest.mark.parametrize("extra", [["--urgency", "hold"], ["--or-hold"]])
+def test_holds_to_pi_survive_an_unsafe_runtime_dir(
+    fake_hls: FakeHls,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    extra: list[str],
+) -> None:
+    runtime = tmp_path / "rt"
+    runtime.mkdir(mode=0o755)
+    runtime.chmod(0o755)
+    monkeypatch.setenv("BELLHOP_RUNTIME_DIR", str(runtime))
+    fake_hls.respond([FakeHls.record("pi", "p1")])
+
+    assert main(["send", "p1", "hi", "--from", "x", *extra, "--json"]) == 0
+
+    stored = json.loads(capsys.readouterr().out)["message"]
+    assert (stored["urgency"], stored["state"]) == ("hold", "pending")

@@ -5,9 +5,10 @@ harness's own in-process route, at one of three urgency levels, and start a stop
 asked.
 
 Status: early development. The store, the drainer and every command below work against
-hooklinesinker, except `send --wake`, which answers `no_route` (exit 4) until launching lands. The
-per-harness delivery routes arrive in later releases, so until then a live session has no route
-and `send` answers `no_route` (or stores a `hold` with `--or-hold`).
+hooklinesinker, except `send --wake`, which answers `no_route` (exit 4) until launching lands. Pi
+sessions are reachable through bellhop's Pi extension; the Claude and Codex routes arrive in later
+releases, so until then such a session has no route and `send` answers `no_route` (or stores a
+`hold` with `--or-hold`).
 
 Messages are unauthenticated: everything runs as one user, and sender names are self-asserted.
 
@@ -28,6 +29,8 @@ bellhop sessions [--json]                           # live Claude, Codex and Pi 
 bellhop whoami [--json]
 bellhop agents [--json]
 bellhop bind <agent> [--json]                       # bind the calling session to a name
+bellhop integration show pi [--json]                # what to install for Pi, and where
+bellhop integration export pi --to DIR [--json]     # copy the Pi extension to DIR
 bellhop doctor [--prune] [--json]
 bellhop --version
 ```
@@ -37,10 +40,16 @@ prefix of 4+ characters that matches one live session, or a title that one live 
 
 Urgency: `now` pushes at once, mid-turn included; `idle` (the default) delivers when the current
 turn ends; `hold` is never pushed and is read with `bellhop inbox`. Messages that have to wait are
-delivered by a background drainer that bellhop starts on its own and that exits when nothing is
-left. State lives in `$XDG_STATE_HOME/bellhop/bellhop.sqlite`; agents are configured in
-`$XDG_CONFIG_HOME/bellhop/config.toml`. Every `--json` object is described in
+delivered by a background drainer that bellhop starts on its own and that exits when nothing
+deliverable is left; a message to an agent with no live session waits in the store, and binding
+that agent starts the drainer again. State lives in `$XDG_STATE_HOME/bellhop/bellhop.sqlite`;
+agents are configured in `$XDG_CONFIG_HOME/bellhop/config.toml`. Every `--json` object is described in
 [docs/user/json.md](docs/user/json.md).
+
+Pi is reached through bellhop's Pi extension: `bellhop integration export pi --to
+~/.pi/agent/extensions` and Pi loads it at start. hooklinesinker 1.5.1 lists a Pi session only
+when Pi runs through an executable named `pi`; `bellhop doctor` names an extension socket whose
+session hooklinesinker does not list.
 
 bellhop runs the `hooklinesinker` named by `$BELLHOP_HOOKLINESINKER`, else
 `$XDG_DATA_HOME/hooklinesinker/bin/hooklinesinker`, else the one on `PATH`.

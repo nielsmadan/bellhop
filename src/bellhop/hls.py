@@ -15,6 +15,7 @@ from bellhop.paths import data_home
 PROTOCOL = 1
 BUDGET_SECONDS = 5.0
 ATTEMPTS = 2
+FIRST_ATTEMPT_SHARE = 0.8
 OVERRIDE = "BELLHOP_HOOKLINESINKER"
 NOT_FOUND = f"hooklinesinker not found; install it or set {OVERRIDE}"
 
@@ -61,7 +62,7 @@ def find_binary(env: Mapping[str, str]) -> Path:
 
 
 def attempt_timeout(attempt: int, budget: float, remaining: float) -> float:
-    return remaining if attempt == ATTEMPTS - 1 else min(remaining, budget / ATTEMPTS)
+    return remaining if attempt == ATTEMPTS - 1 else min(remaining, budget * FIRST_ATTEMPT_SHARE)
 
 
 def _invoke(

@@ -5,9 +5,10 @@ from typing import NoReturn
 
 from bellhop.codes import USAGE
 from bellhop.errors import BellhopError
-from bellhop.models import URGENCIES
+from bellhop.models import HARNESSES, URGENCIES
 
 MISSING_COMMAND = "missing command; see 'bellhop --help'"
+HARNESS_NAMES = tuple(HARNESSES)
 
 
 class _Parser(argparse.ArgumentParser):
@@ -57,6 +58,20 @@ def build_parser() -> argparse.ArgumentParser:
     _command(commands, "agents", "list configured and bound agents")
     bind = _command(commands, "bind", "bind this session to an agent name")
     bind.add_argument("agent", help="lowercase letters, digits, '_' and '-'")
+    integration = commands.add_parser(
+        "integration",
+        help="show or export a harness integration",
+        description="show or export a harness integration",
+        allow_abbrev=False,
+    )
+    actions = integration.add_subparsers(
+        dest="action", metavar="ACTION", parser_class=_Parser, required=True
+    )
+    show = _command(actions, "show", "print what to install and where")
+    show.add_argument("harness", choices=HARNESS_NAMES)
+    export = _command(actions, "export", "copy the integration to a directory you control")
+    export.add_argument("harness", choices=HARNESS_NAMES)
+    export.add_argument("--to", required=True, metavar="DIR", help="the directory to copy into")
     doctor = _command(commands, "doctor", "check hls, directories, store and sockets")
     doctor.add_argument("--prune", action="store_true", help="delete old messages and dead sockets")
     return parser

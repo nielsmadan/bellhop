@@ -54,7 +54,8 @@ code; later records refine them.
   ordered by an autoincrement `seq`, never by timestamp.
 - No resident daemon. All waiting is done by one lazy, user-wide, detached drainer process guarded
   by one `flock`, so a caller never waits on it and cannot kill it.
-- Deadlines nest: an endpoint reply 2 s; an hls call 5 s with one retry; `bellhop send` returns
+- Deadlines nest: an endpoint reply 2 s; an hls call 5 s with one retry (superseded by
+  [ADR 0003](0003-hls-deadline.md)); `bellhop send` returns
   within 10 s unless `--confirm` asks for longer.
 - Exit codes: 0 ok; 1 failure; 2 usage; 3 target not found or ambiguous; 4 target has no usable
   route; 5 hls unavailable; 130 interrupted. A broken pipe is handled quietly.

@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 from collections.abc import Mapping, Sequence
@@ -161,8 +162,30 @@ def test_the_attempt_and_its_retry_share_one_budget() -> None:
     with pytest.raises(HlsUnavailable):
         list_sessions({"BELLHOP_HOOKLINESINKER": "/bin/hls"}, run=slow, clock=lambda: clock[0])
 
-    assert given == [2.5, 2.5]
+    assert given == [4.0, 1.0]
     assert clock[0] == 5.0
+
+
+def test_an_hls_that_answers_in_three_seconds_succeeds_on_the_first_attempt(
+    fake_hls: FakeHls,
+) -> None:
+    clock = [0.0]
+    given: list[float] = []
+
+    def three_seconds(
+        argv: Sequence[str], env: Mapping[str, str], timeout: float
+    ) -> subprocess.CompletedProcess[str]:
+        given.append(timeout)
+        clock[0] += 3.0
+        payload = {"protocol": 1, "sessions": [FakeHls.record("pi", "p1")], "problems": []}
+        return subprocess.CompletedProcess(list(argv), 0, stdout=json.dumps(payload), stderr="")
+
+    result = list_sessions(
+        {"BELLHOP_HOOKLINESINKER": "/bin/hls"}, run=three_seconds, clock=lambda: clock[0]
+    )
+
+    assert [s.session_id for s in result.sessions] == ["p1"]
+    assert given == [4.0]
 
 
 def test_nonzero_exit_is_unavailable(fake_hls: FakeHls) -> None:

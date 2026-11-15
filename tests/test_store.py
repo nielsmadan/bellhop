@@ -13,8 +13,13 @@ import pytest
 from bellhop.errors import BellhopError
 from bellhop.models import Binding, PushResult
 from bellhop.store import (
+    AWAITING_SQL,
+    HAS_WORK_SQL,
     SCHEMA_VERSION,
+    SWEEP_SQL,
     V1,
+    V2,
+    Push,
     awaiting_confirmation,
     bindings,
     claim,
@@ -76,7 +81,7 @@ def test_a_newer_schema_is_refused(tmp_path: Path) -> None:
     path = tmp_path / "bellhop.sqlite"
     connect(path).execute("UPDATE meta SET value = '99' WHERE key = 'schema_version'")
 
-    with pytest.raises(BellhopError, match="has schema version 99; this bellhop reads up to 2"):
+    with pytest.raises(BellhopError, match="has schema version 99; this bellhop reads up to 3"):
         connect(path)
 
 
@@ -177,7 +182,7 @@ def test_an_older_message_in_flight_or_to_the_other_address_counts_as_older(
 ) -> None:
     conn = connect(tmp_path / "bellhop.sqlite")
     flying = insert_message(conn, make_message(1))
-    claim(conn, flying.id, session_id="s1", route="fake", offset=None, now=NOW)
+    claim(conn, flying.id, Push("s1", "fake", None), NOW)
     to_agent = insert_message(conn, make_message(2, target_kind="agent", target="enki"))
     newer = insert_message(conn, make_message(3))
 
@@ -191,8 +196,8 @@ def test_claim_then_each_outcome(tmp_path: Path) -> None:
     states = {}
     for number, outcome in enumerate(("accepted", "busy", "rejected", "unknown"), start=1):
         stored = insert_message(conn, make_message(number))
-        assert claim(conn, stored.id, session_id="s1", route="fake", offset=7, now=NOW) is True
-        assert claim(conn, stored.id, session_id="s1", route="fake", offset=7, now=NOW) is False
+        assert claim(conn, stored.id, Push("s1", "fake", 7), NOW) is True
+        assert claim(conn, stored.id, Push("s1", "fake", 7), NOW) is False
         result = record_outcome(conn, stored.id, PushResult(outcome, f"said {outcome}"), NOW)  # type: ignore[arg-type]
         states[outcome] = (result.state, result.detail, result.transcript_offset)
 
@@ -207,7 +212,7 @@ def test_claim_then_each_outcome(tmp_path: Path) -> None:
 def test_a_stale_claim_is_swept_to_sent_with_an_unknown_outcome(tmp_path: Path) -> None:
     conn = connect(tmp_path / "bellhop.sqlite")
     stored = insert_message(conn, make_message(1))
-    claim(conn, stored.id, session_id="s1", route="fake", offset=None, now=NOW)
+    claim(conn, stored.id, Push("s1", "fake", None), NOW)
 
     assert sweep_sending(conn, NOW - timedelta(seconds=30)) == 0
     assert sweep_sending(conn, NOW + timedelta(seconds=1)) == 1
@@ -258,7 +263,7 @@ def test_confirmation_ends_the_work_and_a_gone_session_fails_only_its_pushes(
 ) -> None:
     conn = connect(tmp_path / "bellhop.sqlite")
     sent = insert_message(conn, make_message(1, target="s2"))
-    claim(conn, sent.id, session_id="s2", route="fake", offset=0, now=NOW)
+    claim(conn, sent.id, Push("s2", "fake", 0), NOW)
     record_outcome(conn, sent.id, PushResult("accepted", "ok"), NOW)
     waiting = insert_message(conn, make_message(2))
     hold = insert_message(conn, make_message(3, urgency="hold"))
@@ -369,3 +374,41 @@ def test_a_symlinked_store_file_is_refused(tmp_path: Path) -> None:
         connect(tmp_path / "state" / "bellhop.sqlite")
 
     assert caught.value.code == "store_error"
+
+
+@pytest.mark.parametrize("sql", [HAS_WORK_SQL, AWAITING_SQL, SWEEP_SQL])
+def test_the_per_tick_queries_use_the_partial_index(tmp_path: Path, sql: str) -> None:
+    conn = connect(tmp_path / "bellhop.sqlite")
+
+    plan = conn.execute(f"EXPLAIN QUERY PLAN {sql}", ("2026-11-14T09:00:00Z",)).fetchall()
+
+    assert any("messages_open" in str(tuple(row)) for row in plan)
+
+
+def test_a_starting_binding_is_work_alone_and_for_its_agents_messages(tmp_path: Path) -> None:
+    conn = connect(tmp_path / "bellhop.sqlite")
+    window = NOW - timedelta(minutes=10)
+    save_binding(conn, binding_named("enki", state="starting"))
+    assert has_work(conn, window) is True
+
+    insert_message(conn, make_message(1, target_kind="agent", target="enki"))
+    save_binding(conn, binding_named("enki", state="failed"))
+    assert has_work(conn, window) is False
+    save_binding(conn, binding_named("enki", state="starting"))
+    assert has_work(conn, window) is True
+
+
+def test_a_version_2_store_gains_the_transcript_column(tmp_path: Path) -> None:
+    path = tmp_path / "bellhop.sqlite"
+    old = sqlite3.connect(path, isolation_level=None)
+    for statement in (*V1, *V2):
+        old.execute(statement)
+    old.execute("INSERT INTO meta VALUES ('schema_version', '2')")
+    old.close()
+
+    conn = connect(path)
+    stored = insert_message(conn, make_message(1))
+    claim(conn, stored.id, Push("s1", "fake", 3, Path("/t/s1.jsonl")), NOW)
+
+    assert schema_version(conn) == 3
+    assert get_messages(conn, [stored.id])[0].transcript == Path("/t/s1.jsonl")

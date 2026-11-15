@@ -162,7 +162,7 @@ class SmokeRun:
             int(signum): signal.signal(signum, signal.SIG_IGN) for signum in TEARDOWN_SIGNALS
         }
         try:
-            self.leftovers = self.teardown()
+            self.leftovers = [*self.leftovers, *self.teardown()]
         finally:
             restore: dict[int, object] = {**quiet, **self._handlers}
             for signum, handler in restore.items():
@@ -408,8 +408,15 @@ class SmokeRun:
 
     def _sweep(self, root: Path) -> list[str]:
         layout = Layout(root, self.base / f"bellhop-smoke-{root.name}")
-        notes: list[str] = []
-        if (layout.codex_dir / "app-server-daemon" / "daemon.pid").exists():
+        daemon_dir = layout.codex_dir / "app-server-daemon"
+        followed = _interior_links(
+            root, (layout.home, layout.codex_dir, daemon_dir, daemon_dir / "daemon.pid")
+        )
+        notes = [
+            f"skipped the codex cleanup of {root.name}: {link} is or lies under a symlink"
+            for link in followed
+        ]
+        if not followed and (daemon_dir / "daemon.pid").exists():
             _attempt(
                 f"stop the codex daemon of {root.name}",
                 lambda: self.codex(
@@ -439,7 +446,8 @@ class SmokeRun:
                 return [*notes, f"skipped {layout.runtime_dir}: {runtime_problem}"]
             remove_codex_sockets(layout.runtime_dir)
             shutil.rmtree(layout.runtime_dir, ignore_errors=True)
-        remove_codex_sockets(layout.codex_dir / "app-server-daemon")
+        if not followed:
+            remove_codex_sockets(daemon_dir)
         return notes
 
     def codex(
@@ -477,6 +485,15 @@ def _unsafe_entry(path: Path, parent: Path) -> str | None:
     if path.resolve().parent != parent.resolve():
         return f"it resolves outside {parent}"
     return None
+
+
+def _interior_links(root: Path, paths: Sequence[Path]) -> list[Path]:
+    outside = [
+        path
+        for path in paths
+        if path.exists() and not path.resolve().is_relative_to(root.resolve())
+    ]
+    return sorted({*(path for path in paths if path.is_symlink()), *outside})
 
 
 def _names(proc: Proc, paths: Sequence[Path]) -> bool:

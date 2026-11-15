@@ -14,7 +14,7 @@ LAYERS: tuple[tuple[str, ...], ...] = (
     ("paths", "jsonout", "store", "envelope", "transcripts", "routes"),
     ("config", "identity", "hls"),
     ("runtime", "targets"),
-    ("delivery",),
+    ("delivery", "wiring"),
     ("drain",),
     ("cli", "testing"),
     ("__main__",),
@@ -34,10 +34,14 @@ IMPORTS_ALLOWED: Mapping[str, frozenset[str]] = {
     "store": frozenset({"codes", "errors", "models"}),
     "envelope": frozenset({"codes", "errors"}),
     "transcripts": frozenset({"models"}),
-    "routes": frozenset({"models"}),
+    "routes": frozenset({"codes", "errors", "models"}),
     "delivery": frozenset({"envelope", "models", "routes", "store", "transcripts"}),
+    "wiring": frozenset(
+        {"config", "errors", "models", "paths", "routes", "runtime", "transcripts"}
+    ),
     "drain": frozenset(
         {
+            "config",
             "delivery",
             "errors",
             "hls",
@@ -48,6 +52,7 @@ IMPORTS_ALLOWED: Mapping[str, frozenset[str]] = {
             "store",
             "targets",
             "transcripts",
+            "wiring",
         }
     ),
     "config": frozenset({"codes", "errors", "models", "paths"}),
@@ -73,6 +78,7 @@ IMPORTS_ALLOWED: Mapping[str, frozenset[str]] = {
             "store",
             "targets",
             "transcripts",
+            "wiring",
         }
     ),
     "testing": frozenset(),
@@ -87,12 +93,20 @@ SIBLING_IMPORTS_ALLOWED: Mapping[str, Mapping[str, frozenset[str]]] = {
         "messages": frozenset({"context", "presentation"}),
         "info": frozenset({"context", "presentation"}),
         "doctor": frozenset({"context", "presentation"}),
-        "dispatch": frozenset({"context", "doctor", "info", "messages", "parsing"}),
+        "integration": frozenset({"context", "presentation"}),
+        "dispatch": frozenset({"context", "doctor", "info", "integration", "messages", "parsing"}),
         "__init__": frozenset({"dispatch", "parsing", "presentation"}),
     },
     "routes": {
         "fake": frozenset(),
-        "__init__": frozenset({"fake"}),
+        "unix": frozenset(),
+        "pi": frozenset({"unix"}),
+        "__init__": frozenset({"fake", "pi"}),
+    },
+    "transcripts": {
+        "common": frozenset(),
+        "pi": frozenset({"common"}),
+        "__init__": frozenset({"pi"}),
     },
     "testing": {
         "__init__": frozenset(),
@@ -107,8 +121,10 @@ PACKAGE_ROOT_IMPORTS_ALLOWED: Mapping[str, frozenset[str]] = {
     "bellhop.__main__": frozenset({"bellhop.cli"}),
     "bellhop.delivery": frozenset({"bellhop.routes", "bellhop.transcripts"}),
     "bellhop.drain": frozenset({"bellhop.routes", "bellhop.transcripts"}),
+    "bellhop.wiring": frozenset({"bellhop.routes", "bellhop.transcripts"}),
     "bellhop.cli.context": frozenset({"bellhop.routes", "bellhop.transcripts"}),
     "bellhop.cli.messages": frozenset({"bellhop.routes"}),
+    "bellhop.cli.info": frozenset({"bellhop.routes"}),
 }
 
 

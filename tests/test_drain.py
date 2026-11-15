@@ -1,5 +1,6 @@
 import json
 import os
+import select
 import signal
 import sqlite3
 import subprocess
@@ -16,6 +17,7 @@ from bellhop.drain import (
     Deps,
     DrainLock,
     State,
+    backoff,
     drainer_argv,
     drainer_env,
     rotate_log,
@@ -27,7 +29,7 @@ from bellhop.errors import HlsUnavailable
 from bellhop.identity import Proc
 from bellhop.models import Binding, Session
 from bellhop.routes.fake import FakeRoute
-from bellhop.store import claim, connect, get_message, insert_message, save_binding
+from bellhop.store import Push, claim, connect, get_message, insert_message, save_binding
 from bellhop.transcripts import PlainTranscripts
 from conftest import FAKE_HLS, NOW, STARTED, FakeHls, make_message, make_session
 
@@ -62,8 +64,8 @@ class World:
         return Deps(
             conn=self.conn,
             sessions=self.listed,
-            routes=lambda session: self.route,
-            readers=lambda session: self.reader,
+            routes=lambda session, binding: self.route,
+            readers=lambda session, binding: self.reader,
             table=lambda: self.table,
             now=lambda: self.clock[0],
             sleep=self.sleep,
@@ -309,7 +311,7 @@ def test_two_addresses_of_one_session_share_its_pacing(world: World) -> None:
 
 def test_the_drainer_sweeps_a_claim_left_by_a_crashed_sender(world: World) -> None:
     stored = insert_message(world.conn, make_message(1))
-    claim(world.conn, stored.id, session_id="s1", route="fake", offset=None, now=NOW)
+    claim(world.conn, stored.id, Push("s1", "fake", None), NOW)
     world.advance(31)
 
     tick(world.deps, State())
@@ -488,24 +490,39 @@ def test_two_drainers_started_together_leave_one_running(process_env: dict[str, 
 def test_a_detached_drainer_is_started_and_restarted_after_a_kill(
     process_env: dict[str, str],
 ) -> None:
-    found: list[int | None] = []
+    spawned: list[int | None] = []
     started = time.monotonic()
-    assert start_drainer(process_env) is True
-    assert time.monotonic() - started < 2
-    found.append(drainer_pid(process_env))
+    spawned.append(start_drainer(process_env))
     try:
-        pid = found[0]
-        assert pid is not None
-        assert start_drainer(process_env) is False
-        stop(pid)
+        assert spawned[0] is not None
+        assert time.monotonic() - started < 2
+        assert drainer_pid(process_env) == spawned[0]
+        assert start_drainer(process_env) is None
+        stop(spawned[0])
 
-        assert start_drainer(process_env) is True
-        found.append(drainer_pid(process_env))
-        assert found[1] is not None
-        assert found[1] != pid
+        spawned.append(start_drainer(process_env))
+        assert spawned[1] is not None
+        assert drainer_pid(process_env) == spawned[1]
     finally:
-        for pid in found:
+        for pid in spawned:
             stop(pid)
+
+
+def test_the_drainer_keeps_none_of_the_callers_inherited_descriptors(
+    process_env: dict[str, str],
+) -> None:
+    read_end, write_end = os.pipe()
+    os.set_inheritable(write_end, True)
+    pid = start_drainer(process_env)
+    try:
+        os.close(write_end)
+        ready, _, _ = select.select([read_end], [], [], 5)
+        assert ready == [read_end]
+        assert os.read(read_end, 1) == b""
+        assert pid is not None and alive_pid(pid)
+    finally:
+        os.close(read_end)
+        stop(pid)
 
 
 def test_the_drainer_never_imports_from_the_callers_directory(
@@ -517,10 +534,10 @@ def test_the_drainer_never_imports_from_the_callers_directory(
     (planted / "json.py").write_text(f"open({str(marker)!r}, 'w').close()\n")
     monkeypatch.chdir(planted)
 
-    assert start_drainer(process_env) is True
-    pid = drainer_pid(process_env)
+    pid = start_drainer(process_env)
     try:
         assert pid is not None
+        assert drainer_pid(process_env) == pid
         assert marker.exists() is False
     finally:
         stop(pid)
@@ -559,3 +576,66 @@ def test_the_lock_file_is_private_whatever_the_umask(tmp_path: Path) -> None:
         os.umask(previous)
 
     assert (tmp_path / "state" / "drain.lock").stat().st_mode & 0o777 == 0o600
+
+
+def test_the_drainer_exits_when_only_messages_to_unbound_agents_wait(world: World) -> None:
+    stored = insert_message(world.conn, make_message(1, target_kind="agent", target="nanna"))
+
+    assert run(world.deps, OpenLock()) == 0
+
+    assert get_message(world.conn, stored.id).state == "pending"
+    assert world.sleeps == []
+
+
+def test_a_bound_agents_message_is_work_for_the_drainer(world: World) -> None:
+    insert_message(world.conn, make_message(1, target_kind="agent", target="enki"))
+    save_binding(world.conn, ENKI)
+
+    assert run(world.deps, OpenLock()) == 0
+
+    assert pushed_bodies(world) == ["body 1"]
+
+
+def test_session_messages_expire_while_hls_stays_down(world: World) -> None:
+    stored = insert_message(world.conn, make_message(1, created_at=NOW - timedelta(hours=30)))
+    world.failures = 10**6
+
+    assert run(world.deps, OpenLock()) == 0
+
+    expired = get_message(world.conn, stored.id)
+    assert (expired.state, expired.detail) == ("failed", "expired")
+    assert world.sleeps == [2.0]
+
+
+def test_the_backoff_stays_at_ten_seconds_however_long_hls_is_down() -> None:
+    assert [backoff(n) for n in (1, 2, 3, 4, 5000)] == [2.0, 4.0, 8.0, 10.0, 10.0]
+
+
+def test_the_route_gets_the_binding_of_the_session_it_delivers_to(world: World) -> None:
+    given: list[tuple[str, str | None]] = []
+
+    def finder(session: Session, binding: Binding | None) -> FakeRoute:
+        given.append((session.session_id, binding.agent if binding else None))
+        return world.route
+
+    save_binding(world.conn, ENKI)
+    save_binding(world.conn, replace(ENKI, agent="s1", session_id="elsewhere"))
+    insert_message(world.conn, make_message(1))
+
+    tick(replace(world.deps, routes=finder), State())
+
+    assert given == [("s1", "enki")]
+    assert pushed_bodies(world) == ["body 1"]
+
+
+def test_a_replaced_session_fails_its_messages_and_an_agent_waits(world: World) -> None:
+    to_session = insert_message(world.conn, make_message(1))
+    to_agent = insert_message(world.conn, make_message(2, target_kind="agent", target="enki"))
+    save_binding(world.conn, ENKI)
+    world.route = FakeRoute(is_reachable=False, is_replaced=True)
+
+    tick(world.deps, State())
+
+    failed = get_message(world.conn, to_session.id)
+    assert (failed.state, failed.detail) == ("failed", "session replaced in its process")
+    assert get_message(world.conn, to_agent.id).state == "pending"

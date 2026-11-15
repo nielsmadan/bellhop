@@ -10,15 +10,17 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import IO, NamedTuple, Protocol
 
+from bellhop.config import load_config
 from bellhop.delivery import Channel, confirm_if_seen, drainer_may_push, push_waiting
 from bellhop.errors import HlsUnavailable
 from bellhop.hls import list_sessions
 from bellhop.identity import SESSION_VARS, ProcessTable, alive, process_table
 from bellhop.models import Binding, Session, TargetKind
 from bellhop.paths import state_dir
-from bellhop.routes import RouteFinder, route_finder
+from bellhop.routes import RouteFinder
 from bellhop.store import (
     GONE_DETAIL,
+    REPLACED_DETAIL,
     awaiting_confirmation,
     bindings,
     expire_sessions,
@@ -30,8 +32,9 @@ from bellhop.store import (
     sweep_sending,
     update_bindings,
 )
-from bellhop.targets import live_session, refresh_bindings
-from bellhop.transcripts import ReaderFinder, reader_finder
+from bellhop.targets import binding_for, live_session, refresh_bindings
+from bellhop.transcripts import ReaderFinder
+from bellhop.wiring import wire
 
 TICK_SECONDS = 1.0
 PACE = timedelta(seconds=3)
@@ -40,6 +43,8 @@ EXPIRY = timedelta(hours=24)
 CONFIRM_WINDOW = timedelta(minutes=10)
 STALE_CLAIM = timedelta(seconds=30)
 BACKOFF_MAX_SECONDS = 10.0
+BACKOFF_STEPS = 4
+STDERR_FD = 2
 LOCK_NAME = "drain.lock"
 LOG_NAME = "drain.log"
 LOG_LIMIT = 1 << 20
@@ -162,19 +167,23 @@ def _drain_target(deps: Deps, state: State, target: tuple[TargetKind, str], view
     if kind == "session" and gone(name, state, view.table):
         fail_pending(deps.conn, kind, name, GONE_DETAIL, view.now)
         return
-    binding = next((b for b in view.bindings if b.agent == name), None)
+    agent = next((b for b in view.bindings if b.agent == name), None) if kind == "agent" else None
     session = (
-        view.present.get(name)
-        if kind == "session"
-        else live_session(binding, view.present.values())
+        view.present.get(name) if kind == "session" else live_session(agent, view.present.values())
     )
     message = oldest_pending(deps.conn, kind, name)
     if session is None or message is None or paced(session, state, view.now):
         return
-    route = deps.routes(session)
-    if route is None or not route.reachable(session) or not drainer_may_push(route, session):
+    binding = agent or binding_for(session, view.bindings)
+    route = deps.routes(session, binding)
+    if route is None or not drainer_may_push(route, session):
         return
-    push_waiting(deps.conn, message, session, Channel(route, deps.readers(session)), view.now)
+    if not route.reachable(session):
+        if kind == "session" and route.replaced(session):
+            fail_pending(deps.conn, kind, name, REPLACED_DETAIL, view.now)
+        return
+    channel = Channel(route, deps.readers(session, binding))
+    push_waiting(deps.conn, message, session, channel, view.now)
     state.pushed[session.session_id] = Pushed(view.now, session.observed_at)
 
 
@@ -185,25 +194,26 @@ def _report(state: State, target: tuple[TargetKind, str], error: Exception) -> N
     state.errors[target] = text
 
 
-def _confirm(deps: Deps, present: Mapping[str, Session], now: datetime) -> None:
-    for message in awaiting_confirmation(deps.conn, now - CONFIRM_WINDOW):
-        session = present.get(message.session_id or "")
+def _confirm(deps: Deps, view: View) -> None:
+    for message in awaiting_confirmation(deps.conn, view.now - CONFIRM_WINDOW):
+        session = view.present.get(message.session_id or "")
         if session is not None:
-            confirm_if_seen(deps.conn, message, session, deps.readers(session), now)
+            reader = deps.readers(session, binding_for(session, view.bindings))
+            confirm_if_seen(deps.conn, message, session, reader, view.now)
 
 
 def tick(deps: Deps, state: State) -> None:
-    sessions = deps.sessions()
     now = deps.now()
-    present = {session.session_id: session for session in sessions}
     sweep_sending(deps.conn, now - STALE_CLAIM)
     expire_sessions(deps.conn, now - EXPIRY, now)
-    _confirm(deps, present, now)
+    sessions = deps.sessions()
+    present = {session.session_id: session for session in sessions}
     targets = pending_targets(deps.conn)
     state.absent = absences(targets, present, state)
     table = deps.table() if needs_table(bindings(deps.conn), state.absent) else None
     current = follow_bindings(deps.conn, sessions, table, now)
     view = View(present, current, table, now)
+    _confirm(deps, view)
     for target in targets:
         try:
             _drain_target(deps, state, target, view)
@@ -216,6 +226,10 @@ def tick(deps: Deps, state: State) -> None:
 
 def work_left(deps: Deps) -> bool:
     return drain_work(deps.conn, deps.now())
+
+
+def backoff(failures: int) -> float:
+    return min(TICK_SECONDS * float(2 ** min(failures, BACKOFF_STEPS)), BACKOFF_MAX_SECONDS)
 
 
 def run(deps: Deps, lock: Lock) -> int:
@@ -232,7 +246,7 @@ def run(deps: Deps, lock: Lock) -> int:
             delay = TICK_SECONDS
         except HlsUnavailable as error:
             state.failures += 1
-            delay = min(TICK_SECONDS * 2**state.failures, BACKOFF_MAX_SECONDS)
+            delay = backoff(state.failures)
             print(f"bellhop: drainer: {error}; retrying in {delay:g}s", file=sys.stderr, flush=True)
         deps.sleep(delay)
 
@@ -272,24 +286,42 @@ def rotate_log(log: Path, limit: int = LOG_LIMIT) -> None:
         pass
 
 
-def start_drainer(env: Mapping[str, str]) -> bool:
+def inherited_fds(candidates: Sequence[int]) -> list[int]:
+    def inheritable(fd: int) -> bool:
+        try:
+            return fd > STDERR_FD and os.get_inheritable(fd)
+        except OSError:
+            return False
+
+    return [fd for fd in candidates if inheritable(fd)]
+
+
+def open_fds() -> list[int]:
+    try:
+        return sorted(int(name) for name in os.listdir("/dev/fd") if name.isdigit())
+    except OSError:
+        return list(range(3, 256))
+
+
+def start_drainer(env: Mapping[str, str]) -> int | None:
     if drainer_running(env):
-        return False
+        return None
     log = state_dir(env) / LOG_NAME
     rotate_log(log)
     log_flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW
-    os.posix_spawn(
+    closes = [(os.POSIX_SPAWN_CLOSE, fd) for fd in inherited_fds(open_fds())]
+    return os.posix_spawn(
         sys.executable,
         drainer_argv(sys.executable),
         drainer_env(env),
         file_actions=[
+            *closes,
             (os.POSIX_SPAWN_OPEN, 0, os.devnull, os.O_RDONLY, 0),
             (os.POSIX_SPAWN_OPEN, 1, str(log), log_flags, PRIVATE_FILE),
             (os.POSIX_SPAWN_DUP2, 1, 2),
         ],
         setsid=True,
     )
-    return True
 
 
 def main(env: Mapping[str, str]) -> int:
@@ -300,11 +332,12 @@ def main(env: Mapping[str, str]) -> int:
         return 0
     lock.record_owner()
     conn = open_store(state_dir(env))
+    wiring = wire(env, lambda: load_config(env))
     deps = Deps(
         conn=conn,
         sessions=lambda: list_sessions(env).sessions,
-        routes=route_finder(env),
-        readers=reader_finder(env),
+        routes=wiring.routes,
+        readers=wiring.readers,
         table=process_table,
         now=lambda: datetime.now(UTC),
         sleep=time.sleep,

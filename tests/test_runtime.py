@@ -5,7 +5,7 @@ import pytest
 
 from bellhop.config import Config
 from bellhop.errors import BellhopError
-from bellhop.runtime import endpoint_path, ensure_runtime_dir, resolve_runtime_dir, runtime_dir
+from bellhop.runtime import ensure_runtime_dir, resolve_runtime_dir, runtime_dir
 
 CONFIG = Config(path=Path("/c/config.toml"))
 
@@ -67,11 +67,3 @@ def test_resolve_uses_the_override(tmp_path: Path) -> None:
     env = {"BELLHOP_RUNTIME_DIR": str(tmp_path / "rt")}
 
     assert resolve_runtime_dir(env, CONFIG) == tmp_path / "rt"
-
-
-def test_endpoint_paths_name_harness_and_pid_and_respect_the_socket_limit() -> None:
-    assert endpoint_path(Path("/tmp/bellhop-501"), "claude", 4242) == Path(
-        "/tmp/bellhop-501/claude-4242.sock"
-    )
-    with pytest.raises(BellhopError, match="is too long for a socket path"):
-        endpoint_path(Path("/" + "x" * 100), "claude", 4242)

@@ -165,3 +165,27 @@ def test_confirmation_needs_the_prefix_after_the_offset(
 
     assert (confirmed.state, confirmed.confirmed_at) == ("confirmed", NOW)
     assert confirm_if_seen(conn, get_message(conn, sent.id), session, None, NOW).state == "sent"
+
+
+def test_confirmation_reads_the_file_recorded_at_push_time(
+    conn: sqlite3.Connection, tmp_path: Path
+) -> None:
+    recorded = tmp_path / "recorded.txt"
+    recorded.write_text("")
+    elsewhere = tmp_path / "elsewhere.txt"
+    elsewhere.write_text("")
+    session = make_session("s1", transcript_path=recorded)
+    stored = insert_message(conn, make_message(1))
+
+    sent = push(
+        conn,
+        stored,
+        session,
+        Channel(FakeRoute(echo=True), PlainTranscripts()),
+        NOW,
+        interrupt=False,
+    )
+    moved = make_session("s1", transcript_path=elsewhere)
+
+    assert sent.transcript == recorded
+    assert confirm_if_seen(conn, sent, moved, PlainTranscripts(), NOW).state == "confirmed"

@@ -14,10 +14,13 @@ from bellhop.drain import drainer_running
 from bellhop.errors import BellhopError
 from bellhop.jsonout import check_object, ok_payload
 from bellhop.paths import state_dir
+from bellhop.routes.pi import UNLISTED_PI
+from bellhop.routes.unix import ping
 from bellhop.runtime import PRIVATE_MODE, resolve_runtime_dir
 from bellhop.store import SCHEMA_VERSION, orphaned, prune, schema_version
 
 PRUNE_AGE = timedelta(days=30)
+EXPORT_AGAIN = "export the integration again: bellhop integration export pi --to <dir>"
 REFUSED = frozenset({errno.ECONNREFUSED, errno.ENOENT})
 
 
@@ -81,6 +84,37 @@ def remove_if_unchanged(path: Path, inode: int) -> bool:
     return True
 
 
+def pi_problems(runtime: Path, listed: set[int]) -> list[str]:
+    try:
+        candidates = sorted(runtime.glob("pi-*.sock"))
+    except OSError:
+        return []
+    pids = {path: path.stem.removeprefix("pi-") for path in candidates}
+    pongs = {path: ping(path, timeout=1.0) for path, pid in pids.items() if pid.isdigit()}
+    answering = {path: pong for path, pong in pongs.items() if pong is not None}
+    old = [path.name for path, pong in answering.items() if not pong.current]
+    unlisted = [path.name for path in answering if int(pids[path]) not in listed]
+    return [
+        *([f"{', '.join(old)} speaks an older bellhop wire; {EXPORT_AGAIN}"] if old else []),
+        *(
+            [f"hooklinesinker does not list the pid behind {', '.join(unlisted)}; {UNLISTED_PI}"]
+            if unlisted
+            else []
+        ),
+    ]
+
+
+def _pi(ctx: Context, runtime: Path) -> Check | None:
+    try:
+        listed = {s.pid for s in ctx.sessions.sessions if s.pid is not None}
+    except BellhopError:
+        return None
+    problems = pi_problems(runtime, listed)
+    if not problems:
+        return Check("pi sessions", True, "every answering pi extension is listed and current")
+    return Check("pi sessions", False, "; ".join(problems))
+
+
 def _hls(ctx: Context) -> Check:
     try:
         count = len(ctx.sessions.sessions)
@@ -107,9 +141,17 @@ def _store(ctx: Context) -> Check:
 
 def _work(ctx: Context) -> Check:
     waiting = orphaned(ctx.conn)
+    try:
+        return _drainer(ctx, waiting)
+    except OSError as error:
+        detail = f"{waiting} messages wait; cannot check or start the drainer: {error}"
+        return Check("pending work", False, detail)
+
+
+def _drainer(ctx: Context, waiting: int) -> Check:
     if waiting and not drainer_running(ctx.env):
         started = ctx.starter(ctx.env)
-        note = "; started the drainer" if started else ""
+        note = "; started the drainer" if started is not None else ""
         return Check("pending work", False, f"{waiting} messages wait and no drainer runs{note}")
     return Check("pending work", True, f"{waiting} messages wait for the drainer")
 
@@ -126,6 +168,8 @@ def run_checks(ctx: Context) -> tuple[list[Check], Path | None]:
         dead = dead_sockets(runtime_path)
         names = ", ".join(path.name for path in dead)
         checks.append(Check("sockets", not dead, f"dead: {names}" if dead else "none dead"))
+        pi = _pi(ctx, runtime_path)
+        checks += [pi] if pi is not None else []
     return checks, runtime_path
 
 

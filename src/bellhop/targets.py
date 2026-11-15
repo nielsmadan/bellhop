@@ -31,15 +31,19 @@ def live_session(binding: Binding | None, sessions: Iterable[Session]) -> Sessio
     return next((s for s in sessions if s.session_id == binding.session_id), None)
 
 
+def binding_for(session: Session, bindings: Sequence[Binding]) -> Binding | None:
+    return next(
+        (b for b in bindings if b.state == "live" and b.session_id == session.session_id), None
+    )
+
+
 def agent_names(config: Config, bindings: Sequence[Binding]) -> list[str]:
     return sorted({*config.agents, *(binding.agent for binding in bindings)})
 
 
 def agent_of(session: Session, bindings: Sequence[Binding]) -> str | None:
-    return next(
-        (b.agent for b in bindings if b.state == "live" and b.session_id == session.session_id),
-        None,
-    )
+    binding = binding_for(session, bindings)
+    return binding.agent if binding is not None else None
 
 
 def _agent_target(

@@ -44,9 +44,12 @@ fail_under = 80
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--strict-config --strict-markers -m 'not smoke'"
+addopts = "--strict-config --strict-markers -m 'not smoke and not packaging'"
 filterwarnings = ["error"]
-markers = ["smoke: live tests against real agents; run only through `just smoke`"]
+markers = [
+    "smoke: live tests against real agents; run only through `just smoke`",
+    "packaging: builds the wheel; run only through `just package-check`",
+]
 
 [tool.ruff]
 target-version = "py313"

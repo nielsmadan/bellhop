@@ -62,8 +62,47 @@ turn had ended.
 | remote-start | Codex | `codex app-server --listen unix://…` per session, TUI `--remote` | as daemon-start | as daemon-start |
 | ext | Pi | extension listening on a unix socket, calling `pi.sendUserMessage` | `deliverAs: "followUp"` | `deliverAs: "steer"` |
 
-The Claude and Pi endpoints speak the wire in the plan's *Endpoint sockets* section (`ping`,
-`deliver boundary`, `deliver interrupt`; one reply line).
+The Claude and Pi endpoints speak the endpoint-socket wire below.
+
+### Endpoint sockets
+
+- The inside piece listens on `<runtime_dir>/<harness>-<pid>.sock`, mode 0600, where `<pid>` is
+  the agent process hooklinesinker reports. It binds a temporary name in the same directory,
+  renames it into place, and on exit unlinks the socket only if it is still its own inode. The
+  whole path must stay under 104 bytes.
+- `<runtime_dir>` is `$BELLHOP_RUNTIME_DIR`, else `runtime_dir` in
+  `$XDG_CONFIG_HOME/bellhop/config.toml`, else `/tmp/bellhop-<uid>`. It must be absolute, a
+  directory owned by the user, mode 0700. A launcher has to pass `BELLHOP_RUNTIME_DIR` and
+  `XDG_CONFIG_HOME` into the agent's environment when it sets them for bellhop.
+- Wire version 2. The client writes one header line, then the UTF-8 envelope, shuts down its
+  write half and reads one reply line. Connect, write and read share one deadline: 2 s for a
+  `deliver`, 0.5 s for a `ping`.
+
+| Header | Meaning |
+|---|---|
+| `ping` | answer `ok pong {"wire":2,"session":<id or null>,"transcript":<absolute path or null>}`; deliver nothing |
+| `deliver boundary <session-id> <bytes>` | deliver at the turn boundary (at once when idle) |
+| `deliver interrupt <session-id> <bytes>` | deliver now, mid-turn included |
+
+Replies: `ok <detail>` (accepted), `busy <detail>` (nothing was queued; try later), `error
+<detail>` (rejected). A refused connection is `busy`; no reply in time, or a connection dropped
+after the write, is `unknown`; a write that did not finish delivered nothing and is `busy`.
+`<bytes>` is the envelope's UTF-8 length; a body that does not match it gets `error truncated` and
+is not delivered. An inside piece in another session answers `error session_mismatch
+<current-session-id>` and delivers nothing. For a session target bellhop treats that like an
+ended session: `send` finds no usable route before storing anything, and the drainer fails the
+session's pending messages with `session replaced in its process`. For an agent target the
+message stays `pending` and the agent is re-resolved on the next poll. A `deliver` header without
+a session id or byte count gets `error wire_version`. bellhop records the transcript file with the
+message when it takes the offset, and confirms in that file. A session whose `ping` reply lacks `"wire":2`, or names another session, is
+not reachable; `doctor` names a socket on an older wire and says to export the integration again.
+
+The Pi extension replies `ok followUp`, `ok steer`, `busy compacting`, `error empty message`,
+`error truncated`, `error session_mismatch <id>`, `error wire_version` and `error unknown header
+<h>`, and drops a
+connection that sends nothing for 5 s or more than 64 KB. Its `transcript` is Pi's session file
+(`--session-dir` and `PI_CODING_AGENT_SESSION_DIR` included); bellhop's Pi reader falls back to
+the per-cwd directory under `PI_CODING_AGENT_DIR` only when the extension reports none.
 
 ## Results (k/n, three repetitions)
 

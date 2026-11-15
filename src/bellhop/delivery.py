@@ -7,6 +7,7 @@ from bellhop.envelope import prefix, render
 from bellhop.models import Message, PushResult, Session, Urgency
 from bellhop.routes import Route
 from bellhop.store import (
+    Push,
     claim,
     confirm,
     get_message,
@@ -82,9 +83,8 @@ def push(
 ) -> Message:
     route, reader = channel.route, channel.reader
     offset = reader.size(session) if reader is not None else None
-    if not claim(
-        conn, message.id, session_id=session.session_id, route=route.name, offset=offset, now=now
-    ):
+    transcript = reader.path(session) if reader is not None and offset is not None else None
+    if not claim(conn, message.id, Push(session.session_id, route.name, offset, transcript), now):
         return get_message(conn, message.id)
     waiting = holds_waiting(conn, message.target_kind, message.target)
     text = render(message.id, message.sender, message.body, waiting)
@@ -107,7 +107,9 @@ def push_waiting(
 def seen(message: Message, session: Session, reader: TranscriptReader | None) -> bool:
     if reader is None or message.transcript_offset is None:
         return False
-    return reader.contains(session, prefix(message.id), since=message.transcript_offset)
+    return reader.contains(
+        session, prefix(message.id), since=message.transcript_offset, path=message.transcript
+    )
 
 
 def confirm_if_seen(

@@ -1,6 +1,7 @@
 import json
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
+from pathlib import Path
 
 from bellhop.errors import BellhopError
 from bellhop.models import Binding, Harness, Message, Session
@@ -101,6 +102,11 @@ def agent_object(
 
 def check_object(name: str, ok: bool, detail: str) -> dict[str, object]:
     return {"name": name, "ok": ok, "detail": detail}
+
+
+def integration_object(harness: str, file: Path, **extra: object) -> dict[str, object]:
+    fields = {key: str(value) if isinstance(value, Path) else value for key, value in extra.items()}
+    return {"harness": harness, "file": str(file), **fields}
 
 
 def whoami_object(session: Session, agent: str | None) -> dict[str, object]:

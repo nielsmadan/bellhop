@@ -1,13 +1,18 @@
+import contextlib
 import io
 import json
+import socket
 import sys
+import threading
 import time
+from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 
 from bellhop.cli import main
 from bellhop.store import connect
-from conftest import ALPHA, BETA, Bell, FakeHls, check_golden, payload_message
+from conftest import ALPHA, BETA, Bell, FakeHls, check_golden, payload_message, pong_server
 
 
 def test_an_idle_send_to_a_queueing_route_is_sent(bell: Bell, drainer_starts: list[str]) -> None:
@@ -19,7 +24,7 @@ def test_an_idle_send_to_a_queueing_route_is_sent(bell: Bell, drainer_starts: li
     assert bell.pushes() == [
         {"session_id": ALPHA, "text": f"[bellhop {sent['id']} from enki] hello", "interrupt": False}
     ]
-    assert drainer_starts != []
+    assert drainer_starts == [str(bell.tmp / "state-home")]
     check_golden("send-sent", payload)
 
 
@@ -146,6 +151,7 @@ def test_or_hold_with_no_route_stores_a_hold(bell: Bell) -> None:
         "idle",
         "pending",
     )
+    check_golden("send-held", payload)
 
 
 def test_a_direct_push_never_overtakes_an_older_pending_message(bell: Bell) -> None:
@@ -371,3 +377,163 @@ def test_the_sender_falls_back_to_the_session_id_without_a_title(
     _, payload = bell.run("send", BETA, "x")
 
     assert payload_message(payload)["sender"] == gamma
+
+
+def test_a_failing_drainer_start_is_a_warning_and_the_send_still_succeeds(
+    bell: Bell, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refused(env: object) -> int:
+        raise OSError(62, "Too many levels of symbolic links")
+
+    monkeypatch.setattr("bellhop.cli.context.start_drainer", refused)
+    bell.route(BETA, queues_until_idle=False, busy=True)
+
+    code, payload = bell.run("send", BETA, "x", "--from", "enki")
+    status, again = bell.run("status", str(payload_message(payload)["id"]))
+
+    assert (code, status) == (0, 0)
+    assert payload["warnings"] == [
+        "cannot start the drainer: [Errno 62] Too many levels of symbolic links"
+    ]
+    assert again["warnings"] == payload["warnings"]
+
+
+def test_a_command_that_fails_still_restarts_a_dead_drainer(
+    bell: Bell, drainer_starts: list[str]
+) -> None:
+    bell.route(BETA, queues_until_idle=False, busy=True)
+    bell.run("send", BETA, "x", "--from", "enki")
+    drainer_starts.clear()
+
+    code, _ = bell.run("send", "nobody-here", "x")
+
+    assert code == 3
+    assert drainer_starts == [str(bell.tmp / "state-home")]
+
+
+def test_binding_an_agent_with_waiting_messages_starts_the_drainer(
+    bell: Bell, monkeypatch: pytest.MonkeyPatch, drainer_starts: list[str]
+) -> None:
+    config = bell.tmp / "config-home" / "bellhop" / "config.toml"
+    config.parent.mkdir(parents=True)
+    config.write_text("[agents.enki]\nharness = 'claude'\n")
+    _, waiting = bell.run("send", "enki", "for later", "--from", "nanna")
+    assert payload_message(waiting)["state"] == "pending"
+    assert drainer_starts == []
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", ALPHA)
+
+    bell.run("bind", "enki")
+
+    assert drainer_starts == [str(bell.tmp / "state-home")]
+
+
+def test_a_repeated_key_reports_a_read_or_in_flight_message_as_stored(bell: Bell) -> None:
+    _, held = bell.run("send", ALPHA, "h", "--urgency", "hold", "--key", "k-read", "--from", "x")
+    _, flying = bell.run("send", ALPHA, "f", "--key", "k-fly", "--from", "x")
+    conn = connect(bell.tmp / "state-home" / "bellhop" / "bellhop.sqlite")
+    conn.execute("UPDATE messages SET state = 'read' WHERE key = 'k-read'")
+    conn.execute("UPDATE messages SET state = 'sending' WHERE key = 'k-fly'")
+    conn.close()
+
+    _, read = bell.run("send", ALPHA, "h", "--urgency", "hold", "--key", "k-read", "--from", "x")
+    _, sending = bell.run("send", ALPHA, "f", "--key", "k-fly", "--from", "x")
+
+    assert (payload_message(read)["state"], payload_message(sending)["state"]) == (
+        "read",
+        "sending",
+    )
+    check_golden("send-read", read)
+    check_golden("send-sending", sending)
+    assert payload_message(held)["id"] == payload_message(read)["id"]
+    assert payload_message(flying)["id"] == payload_message(sending)["id"]
+
+
+def test_a_failing_drainer_start_is_tried_and_reported_once_per_command(
+    bell: Bell, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tries: list[int] = []
+
+    def refused(env: object) -> int:
+        tries.append(1)
+        raise OSError(62, "Too many levels of symbolic links")
+
+    bell.route(BETA, queues_until_idle=False, busy=True)
+    bell.run("send", BETA, "first", "--from", "enki")
+    monkeypatch.setattr("bellhop.cli.context.start_drainer", refused)
+
+    _, payload = bell.run("send", BETA, "second", "--from", "enki")
+
+    assert len(payload["warnings"]) == 1
+    assert tries == [1]
+
+
+@contextlib.contextmanager
+def stalling_pi(path: Path) -> Iterator[None]:
+    server = socket.socket(socket.AF_UNIX)
+    server.bind(str(path))
+    server.listen(4)
+    held: list[socket.socket] = []
+
+    def answer() -> None:
+        with contextlib.suppress(OSError):
+            while True:
+                conn, _ = server.accept()
+                held.append(conn)
+                data = b""
+                while chunk := conn.recv(65536):
+                    data += chunk
+                if data.startswith(b"ping"):
+                    conn.sendall(b'ok pong {"wire":2,"session":"p1","transcript":null}\n')
+
+    threading.Thread(target=answer, daemon=True).start()
+    try:
+        yield
+    finally:
+        server.close()
+        for conn in held:
+            conn.close()
+
+
+def test_send_stays_under_ten_seconds_with_every_dependency_slow(
+    fake_hls: FakeHls,
+    monkeypatch: pytest.MonkeyPatch,
+    short_tmp: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    fake_hls.respond(
+        [FakeHls.record("pi", "p1", process={"pid": 5150, "startedAt": "2026-11-13T09:00:00Z"})]
+    )
+    fake_hls.slow_first_call()
+    monkeypatch.setenv("BELLHOP_RUNTIME_DIR", str(short_tmp))
+    short_tmp.chmod(0o700)
+
+    def slow_table() -> None:
+        time.sleep(1.4)
+
+    monkeypatch.setattr("bellhop.cli.context.process_table", slow_table)
+    started = time.monotonic()
+    with stalling_pi(short_tmp / "pi-5150.sock"):
+        code = main(["send", "p1", "hello", "--json"])
+
+    elapsed = time.monotonic() - started
+    assert elapsed < 9.5
+    assert (code, json.loads(capsys.readouterr().out)["message"]["state"]) == (0, "sent")
+
+
+def test_send_to_a_pi_session_its_process_has_left_stores_nothing(
+    fake_hls: FakeHls,
+    monkeypatch: pytest.MonkeyPatch,
+    short_tmp: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    fake_hls.respond(
+        [FakeHls.record("pi", "p1", process={"pid": 5150, "startedAt": "2026-11-13T09:00:00Z"})]
+    )
+    monkeypatch.setenv("BELLHOP_RUNTIME_DIR", str(short_tmp))
+    short_tmp.chmod(0o700)
+    reply = b'ok pong {"wire":2,"session":"p2","transcript":null}\n'
+
+    with pong_server(short_tmp / "pi-5150.sock", reply):
+        code = main(["send", "p1", "hello", "--from", "x", "--json"])
+
+    assert (code, json.loads(capsys.readouterr().out)["error"]["code"]) == (4, "no_route")

@@ -15,7 +15,7 @@ SESSION_VARS: Mapping[str, str] = {
 }
 START_TOLERANCE = timedelta(seconds=1)
 LSTART = "%a %b %d %H:%M:%S %Y"
-PS_SECONDS = 5.0
+PS_SECONDS = 1.5
 
 
 @dataclass(frozen=True)
@@ -123,15 +123,15 @@ def identify(
     chain = ancestors(pid, table or {})
     claimed = [(var, env[var], harness) for var, harness in SESSION_VARS.items() if env.get(var)]
     if claimed:
-        listed = [
-            session
-            for session in sessions
-            for _, value, harness in claimed
-            if session.session_id == value and session.harness == harness
-        ]
-        if not listed:
-            named = ", ".join(f"{var}={value}" for var, value, _ in claimed)
+        found = {
+            var: [s for s in sessions if s.session_id == value and s.harness == harness]
+            for var, value, harness in claimed
+        }
+        unlisted = [f"{var}={env[var]}" for var, matches in found.items() if not matches]
+        if unlisted:
+            named = ", ".join(unlisted)
             raise _unknown(f"{named} is not a live session hooklinesinker lists")
+        listed = [session for matches in found.values() for session in matches]
         if len(listed) == 1:
             return listed[0]
         nearest = _nearest(listed, chain)

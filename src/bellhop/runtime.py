@@ -8,7 +8,6 @@ from bellhop.config import Config
 from bellhop.errors import BellhopError
 
 ENV = "BELLHOP_RUNTIME_DIR"
-SOCKET_PATH_LIMIT = 104
 PRIVATE_MODE = 0o700
 
 
@@ -49,10 +48,3 @@ def ensure_runtime_dir(path: Path, uid: int) -> Path:
 def resolve_runtime_dir(env: Mapping[str, str], config: Config) -> Path:
     owner = os.getuid()
     return ensure_runtime_dir(runtime_dir(env, config, owner), owner)
-
-
-def endpoint_path(directory: Path, harness: str, pid: int) -> Path:
-    path = directory / f"{harness}-{pid}.sock"
-    if len(str(path).encode()) >= SOCKET_PATH_LIMIT:
-        raise _unsafe(directory, f"is too long for a socket path ({path})")
-    return path

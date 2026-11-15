@@ -17,14 +17,24 @@ from bellhop.identity import alive
 from bellhop.identity import whoami as identify_caller
 from bellhop.jsonout import agent_object, ok_payload, session_object, whoami_object
 from bellhop.models import Binding, Harness, Session
+from bellhop.routes import Route
 from bellhop.store import pending_count, save_binding_unless
-from bellhop.targets import agent_names, agent_of
+from bellhop.targets import agent_names, agent_of, binding_for
+
+
+def probe(route: Route, session: Session, ctx: Context) -> bool:
+    try:
+        return route.reachable(session)
+    except BellhopError as error:
+        warning = f"cannot reach {session.harness} sessions: {error}"
+        ctx.warnings += [] if warning in ctx.warnings else [warning]
+        return False
 
 
 def session_row(session: Session, ctx: Context) -> dict[str, object]:
     agent = agent_of(session, ctx.bindings)
-    route = ctx.routes(session)
-    reachable = route is not None and route.reachable(session)
+    route = ctx.routes(session, binding_for(session, ctx.bindings))
+    reachable = route is not None and probe(route, session, ctx)
     pending = pending_count(ctx.conn, "session", session.session_id) + (
         pending_count(ctx.conn, "agent", agent) if agent else 0
     )
@@ -153,6 +163,7 @@ def bind(args: argparse.Namespace, ctx: Context) -> int:
             f"'{name}' is bound to live session {held.session_id}", code=BINDING_CONFLICT
         )
     ctx.forget_bindings()
+    ctx.kick()
     row = agent_object(name, session.harness, configured=configured is not None, binding=binding)
     if args.json:
         print_json(ok_payload(ctx.warnings, {"agent": row}))

@@ -1,9 +1,15 @@
+import contextlib
 import io
 import json
 import os
 import re
+import shutil
+import socket
 import sys
+import tempfile
+import threading
 from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -112,6 +118,8 @@ def isolated_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.delenv("BELLHOP_HOOKLINESINKER", raising=False)
     monkeypatch.delenv("BELLHOP_RUNTIME_DIR", raising=False)
     monkeypatch.delenv("BELLHOP_FAKE_ROUTES", raising=False)
+    monkeypatch.delenv("PI_CODING_AGENT_DIR", raising=False)
+    monkeypatch.delenv("PI_CODING_AGENT_SESSION_DIR", raising=False)
     for name in ("CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "PI_SESSION_ID"):
         monkeypatch.delenv(name, raising=False)
     for name in [name for name in os.environ if name.startswith("FAKE_HLS_")]:
@@ -131,9 +139,9 @@ def fake_hls(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakeHls:
 def drainer_starts(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     started: list[str] = []
 
-    def record(env: Mapping[str, str]) -> bool:
+    def record(env: Mapping[str, str]) -> int:
         started.append(env.get("XDG_STATE_HOME", ""))
-        return True
+        return 1
 
     monkeypatch.setattr("bellhop.cli.context.start_drainer", record)
     return started
@@ -183,6 +191,7 @@ def make_message(number: int, **changes: object) -> Message:
         detail=None,
         session_id=None,
         transcript_offset=None,
+        transcript=None,
         created_at=NOW,
         sent_at=None,
         confirmed_at=None,
@@ -287,3 +296,34 @@ def payload_message(payload: dict[str, object]) -> dict[str, object]:
     value = payload["message"]
     assert isinstance(value, dict)
     return value
+
+
+@pytest.fixture
+def short_tmp() -> Iterator[Path]:
+    path = Path(tempfile.mkdtemp(prefix="bh-", dir="/tmp"))
+    yield path
+    shutil.rmtree(path, ignore_errors=True)
+
+
+@contextmanager
+def pong_server(
+    path: Path, reply: bytes = b'ok pong {"wire":2,"session":null,"transcript":null}\n'
+) -> Iterator[None]:
+    server = socket.socket(socket.AF_UNIX)
+    server.bind(str(path))
+    server.listen(4)
+
+    def answer() -> None:
+        with contextlib.suppress(OSError):
+            while True:
+                conn, _ = server.accept()
+                with conn, contextlib.suppress(OSError):
+                    while conn.recv(4096):
+                        pass
+                    conn.sendall(reply)
+
+    threading.Thread(target=answer, daemon=True).start()
+    try:
+        yield
+    finally:
+        server.close()

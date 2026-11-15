@@ -24,6 +24,7 @@ from bellhop.routes import Route
 from bellhop.store import (
     EXPIRED_DETAIL,
     GONE_DETAIL,
+    REPLACED_DETAIL,
     find_by_key,
     get_message,
     get_messages,
@@ -32,10 +33,10 @@ from bellhop.store import (
     set_degraded,
     take_inbox,
 )
-from bellhop.targets import Target, agent_of, live_session, resolve
+from bellhop.targets import Target, agent_of, binding_for, live_session, resolve
 
 CONFIRM_POLL_SECONDS = 0.2
-NEVER_PUSHED = frozenset({EXPIRED_DETAIL, GONE_DETAIL})
+NEVER_PUSHED = frozenset({EXPIRED_DETAIL, GONE_DETAIL, REPLACED_DETAIL})
 
 
 @dataclass(frozen=True)
@@ -64,12 +65,22 @@ def target_label(target: Target) -> str:
     return target.agent or target.title or target.name
 
 
+def probe_route(route: Route, session: Session, args: argparse.Namespace, ctx: Context) -> bool:
+    try:
+        return route.reachable(session)
+    except BellhopError as error:
+        if not args.or_hold:
+            raise
+        ctx.warnings.append(f"cannot reach {session.harness} sessions: {error}")
+        return False
+
+
 def choose(target: Target, urgency: Urgency, args: argparse.Namespace, ctx: Context) -> Delivery:
     session = target.session
-    route = ctx.routes(session) if session is not None else None
-    usable = route is not None and session is not None and route.reachable(session)
     if urgency == "hold":
-        return Delivery(session, route if usable else None, urgency, None)
+        return Delivery(session, None, urgency, None)
+    route = ctx.routes(session, binding_for(session, ctx.bindings)) if session is not None else None
+    usable = route is not None and session is not None and probe_route(route, session, args, ctx)
     if session is None:
         if args.wake:
             raise BellhopError(
@@ -116,6 +127,7 @@ def build(
         detail=None,
         session_id=delivery.session.session_id if delivery.session else None,
         transcript_offset=None,
+        transcript=None,
         created_at=now,
         sent_at=None,
         confirmed_at=None,
@@ -137,14 +149,14 @@ def deliver(stored: Message, target: Target, delivery: Delivery, ctx: Context) -
         stored = set_degraded(ctx.conn, stored.id, plan.degraded_from)
     if not plan.push:
         return stored
-    channel = Channel(route, ctx.readers(session))
+    channel = Channel(route, ctx.readers(session, binding_for(session, ctx.bindings)))
     return push(ctx.conn, stored, session, channel, ctx.now(), interrupt=plan.interrupt)
 
 
 def wait_for_confirmation(
     stored: Message, session: Session, seconds: float, ctx: Context
 ) -> Message:
-    reader = ctx.readers(session)
+    reader = ctx.readers(session, binding_for(session, ctx.bindings))
     if reader is None or stored.transcript_offset is None:
         ctx.warnings.append("cannot confirm: no transcript to read for this session")
         return stored

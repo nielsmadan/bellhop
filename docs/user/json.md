@@ -14,8 +14,9 @@ A successful command:
 ```
 
 `warnings` lists problems that did not stop the command: hooklinesinker `problems`, skipped hls
-records, unknown message ids for `status`, and for `send --confirm` either `not confirmed within
-Ns` or `cannot confirm: no transcript to read for this session` (returned at once).
+records, unknown message ids for `status`, `cannot start the drainer: <reason>` (the command still
+succeeds), and for `send --confirm` either `not confirmed within Ns` or `cannot confirm: no
+transcript to read for this session` (returned at once).
 
 A failed command:
 
@@ -46,7 +47,7 @@ Returned by `send` (`message`), and in lists by `status` and `inbox` (`messages`
 | `state` | see below |
 | `degraded_from` | `now` when a `now` message went out as `idle` because the route cannot interrupt (by `send` or later by the drainer); the original urgency when `--or-hold` turned it into a `hold`; else null. Only `urgency: "hold"` means the message was held; a non-null `degraded_from` alone does not |
 | `route` | the route that took the push (`claude-relay`, `codex-app-server`, `pi-extension`, …), or `none` (the string; `sessions[].route` uses `null` instead) |
-| `detail` | the route's reply, `push raised <error>`, `outcome unknown`, `expired`, `session gone`, or null |
+| `detail` | the route's reply, `push raised <error>`, `outcome unknown`, `expired`, `session gone`, `session replaced in its process`, or null |
 | `created_at` | when it was stored |
 | `sent_at` | when the push was accepted; null unless `state` is `sent` or `confirmed` |
 | `confirmed_at` | when the receiver's transcript showed it, or null |
@@ -65,7 +66,7 @@ States:
 | `sent` | the route accepted it, or the outcome is unknown (`detail` says which); never pushed again |
 | `confirmed` | the envelope prefix `[bellhop <id> from` appeared in the receiver's transcript after the push |
 | `read` | a `hold` taken by `bellhop inbox` |
-| `failed` | rejected by the receiver, `expired` (a session-target push pending over 24 hours), or `session gone`; a `hold` never fails this way and waits for `bellhop inbox` |
+| `failed` | rejected by the receiver, `expired` (a session-target push pending over 24 hours), `session gone`, or `session replaced in its process` (Pi `/new` and the like); a `hold` never fails this way and waits for `bellhop inbox` |
 
 ## Commands
 
@@ -78,6 +79,8 @@ States:
 | `whoami` | `session`: `session_id`, `harness`, `title`, `agent` |
 | `agents` | `agents`: `agent`, `harness`, `configured`, `binding` (`state` `live`/`failed`, and `starting` once `bellhop launch` exists; `session_id`, `cause`, `detail`) or null; every configured agent and every bound name |
 | `bind <agent>` | `agent`: the same shape as one `agents` entry |
+| `integration show pi` | `integration`: `harness`, `file` (the packaged extension), `install_dir` (where Pi loads extensions), `lines` (the text output) |
+| `integration export pi --to DIR` | `integration`: `harness`, `file` (the absolute path of the copy) |
 | `doctor` | `checks`: `name`, `ok`, `detail`; `pruned`: `{"messages": n, "sockets": n}` with `--prune`, else null. When a check failed, the same two fields ride on a `doctor_failed` error |
 
 ## Error codes
@@ -93,12 +96,13 @@ Nothing is stored when one of these is returned (except `interrupted` and `inter
 | `target_ambiguous` | 3 | an id prefix or a title matches more than one live session; `candidates` lists them |
 | `caller_unknown` | 3 | `whoami`, `inbox` or `bind` cannot place the caller in exactly one live session |
 | `no_route` | 4 | the target is live but has no usable route (and no `--or-hold`), or `--wake` was asked for an agent that is not running |
-| `hls_unavailable` | 5 | hooklinesinker is missing, gave no answer within 5 s (two attempts sharing that budget), failed, or speaks another protocol |
+| `hls_unavailable` | 5 | hooklinesinker is missing, gave no answer within 5 s (a first attempt of up to 4 s and a retry in the rest), failed, or speaks another protocol |
 | `invalid_environment` | 1 | a relative `XDG_*` or `BELLHOP_RUNTIME_DIR` value |
-| `runtime_dir_unsafe` | 1 | the runtime directory is not a directory owned by the caller with mode 0700 (reported by `doctor` today; by the routes once they exist), or a socket path is too long |
+| `runtime_dir_unsafe` | 1 | the runtime directory is not a directory owned by the caller with mode 0700 (`send` to a Pi session and `doctor`; `sessions` reports it as a warning and `reachable: false`), or a socket path is too long |
 | `store_error` | 1 | the store cannot be opened, or has a newer schema than this bellhop |
 | `binding_conflict` | 1 | `bind` to a name a live process of another session holds |
 | `doctor_failed` | 1 | `doctor` found a failed check; the error also carries `checks` and `pruned` |
+| `export_failed` | 1 | `integration export` could not create or write the copy |
 | `internal_error` | 1 | an unexpected failure |
 | `interrupted` | 130 | Ctrl-C |
 

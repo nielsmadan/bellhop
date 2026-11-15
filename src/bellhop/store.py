@@ -3,6 +3,7 @@ import sqlite3
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -18,12 +19,13 @@ from bellhop.models import (
     Urgency,
 )
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 BUSY_TIMEOUT_SECONDS = 30.0
 WAL_RETRY_SECONDS = 0.05
 FILE_NAME = "bellhop.sqlite"
 EXPIRED_DETAIL = "expired"
 GONE_DETAIL = "session gone"
+REPLACED_DETAIL = "session replaced in its process"
 
 V1 = (
     "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
@@ -72,7 +74,20 @@ V2 = (
     """CREATE INDEX messages_open ON messages (state, seq)
     WHERE state IN ('pending', 'sending', 'sent')""",
 )
-MIGRATIONS: tuple[tuple[str, ...], ...] = (V1, V2)
+V3 = ("ALTER TABLE messages ADD COLUMN transcript TEXT",)
+MIGRATIONS: tuple[tuple[str, ...], ...] = (V1, V2, V3)
+OPEN = "state IN ('pending', 'sending', 'sent')"
+DELIVERABLE = """((state = 'pending' AND urgency != 'hold' AND (target_kind = 'session'
+    OR EXISTS (SELECT 1 FROM bindings WHERE bindings.agent = messages.target
+    AND bindings.state IN ('live', 'starting'))))
+    OR state = 'sending')"""
+SWEEP_SQL = f"""UPDATE messages SET state = 'sent', detail = 'outcome unknown'
+    WHERE {OPEN} AND state = 'sending' AND sent_at < ?"""
+AWAITING_SQL = f"""SELECT * FROM messages WHERE {OPEN} AND state = 'sent'
+    AND transcript_offset IS NOT NULL AND session_id IS NOT NULL AND sent_at >= ? ORDER BY seq"""
+HAS_WORK_SQL = f"""SELECT 1 FROM messages WHERE {OPEN} AND ({DELIVERABLE}
+    OR (state = 'sent' AND transcript_offset IS NOT NULL AND sent_at >= ?))
+    UNION ALL SELECT 1 FROM bindings WHERE state = 'starting' LIMIT 1"""
 OUTCOME_STATES: Mapping[PushOutcome, MessageState] = {
     "accepted": "sent",
     "busy": "pending",
@@ -204,6 +219,7 @@ def _message(row: sqlite3.Row) -> Message:
         detail=row["detail"],
         session_id=row["session_id"],
         transcript_offset=row["transcript_offset"],
+        transcript=Path(row["transcript"]) if row["transcript"] else None,
         created_at=parse_iso(row["created_at"]) or datetime.min.replace(tzinfo=UTC),
         sent_at=parse_iso(row["sent_at"]),
         confirmed_at=parse_iso(row["confirmed_at"]),
@@ -292,20 +308,21 @@ def holds_waiting(conn: sqlite3.Connection, kind: TargetKind, target: str) -> in
     return int(row["n"])
 
 
-def claim(
-    conn: sqlite3.Connection,
-    message_id: str,
-    *,
-    session_id: str,
-    route: str,
-    offset: int | None,
-    now: datetime,
-) -> bool:
+@dataclass(frozen=True)
+class Push:
+    session_id: str
+    route: str
+    offset: int | None = None
+    transcript: Path | None = None
+
+
+def claim(conn: sqlite3.Connection, message_id: str, push: Push, now: datetime) -> bool:
+    transcript = str(push.transcript) if push.transcript else None
     with write(conn):
         cursor = conn.execute(
             """UPDATE messages SET state = 'sending', session_id = ?, route = ?,
-            transcript_offset = ?, sent_at = ? WHERE id = ? AND state = 'pending'""",
-            (session_id, route, offset, iso(now), message_id),
+            transcript_offset = ?, transcript = ?, sent_at = ? WHERE id = ? AND state = 'pending'""",
+            (push.session_id, push.route, push.offset, transcript, iso(now), message_id),
         )
     return cursor.rowcount == 1
 
@@ -318,7 +335,7 @@ def record_outcome(
         if state == "pending":
             conn.execute(
                 """UPDATE messages SET state = 'pending', detail = ?, sent_at = NULL,
-                transcript_offset = NULL WHERE id = ? AND state = 'sending'""",
+                transcript_offset = NULL, transcript = NULL WHERE id = ? AND state = 'sending'""",
                 (result.detail, message_id),
             )
         else:
@@ -333,11 +350,7 @@ def record_outcome(
 
 def sweep_sending(conn: sqlite3.Connection, claimed_before: datetime) -> int:
     with write(conn):
-        cursor = conn.execute(
-            """UPDATE messages SET state = 'sent', detail = 'outcome unknown'
-            WHERE state = 'sending' AND sent_at < ?""",
-            (iso(claimed_before),),
-        )
+        cursor = conn.execute(SWEEP_SQL, (iso(claimed_before),))
     return cursor.rowcount
 
 
@@ -382,11 +395,7 @@ def expire_sessions(conn: sqlite3.Connection, created_before: datetime, now: dat
 
 
 def awaiting_confirmation(conn: sqlite3.Connection, sent_after: datetime) -> list[Message]:
-    rows = conn.execute(
-        """SELECT * FROM messages WHERE state = 'sent' AND transcript_offset IS NOT NULL
-        AND session_id IS NOT NULL AND sent_at >= ? ORDER BY seq""",
-        (iso(sent_after),),
-    )
+    rows = conn.execute(AWAITING_SQL, (iso(sent_after),))
     return [_message(row) for row in rows]
 
 
@@ -435,20 +444,12 @@ def pending_count(conn: sqlite3.Connection, kind: TargetKind, target: str) -> in
 
 
 def has_work(conn: sqlite3.Connection, confirm_after: datetime) -> bool:
-    row = conn.execute(
-        """SELECT 1 FROM messages WHERE (state = 'pending' AND urgency != 'hold')
-        OR state = 'sending'
-        OR (state = 'sent' AND transcript_offset IS NOT NULL AND sent_at >= ?) LIMIT 1""",
-        (iso(confirm_after),),
-    ).fetchone()
+    row = conn.execute(HAS_WORK_SQL, (iso(confirm_after),)).fetchone()
     return row is not None
 
 
 def orphaned(conn: sqlite3.Connection) -> int:
-    row = conn.execute(
-        """SELECT count(*) AS n FROM messages WHERE (state = 'pending' AND urgency != 'hold')
-        OR state = 'sending'"""
-    ).fetchone()
+    row = conn.execute(f"SELECT count(*) AS n FROM messages WHERE {DELIVERABLE}").fetchone()
     return int(row["n"])
 
 
