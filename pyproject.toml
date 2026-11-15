@@ -1,0 +1,98 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "bellhop"
+version = "0.1.0"
+description = "Deliver a message into a running coding-agent session."
+readme = "README.md"
+requires-python = ">=3.13"
+license = "MIT"
+authors = [{ name = "Niels Madan" }]
+dependencies = []
+keywords = ["agents", "cli", "coding-agents", "messaging"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.13",
+]
+
+[project.urls]
+Homepage = "https://github.com/nielsmadan/bellhop"
+Repository = "https://github.com/nielsmadan/bellhop"
+Issues = "https://github.com/nielsmadan/bellhop/issues"
+
+[project.scripts]
+bellhop = "bellhop.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=9.2.0", "pytest-cov>=5", "ruff>=0.17.4", "pylint>=4.0.7", "mypy>=2.4.1"]
+
+[tool.coverage.run]
+source = ["bellhop"]
+branch = true
+omit = ["*/__main__.py"]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 80
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-config --strict-markers -m 'not smoke'"
+filterwarnings = ["error"]
+markers = ["smoke: live tests against real agents; run only through `just smoke`"]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+src = ["src", "tests"]
+extend-exclude = ["spikes"]
+
+[tool.ruff.lint]
+extend-select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "PL", "BLE", "S", "SLF", "RUF"]
+ignore = ["E501", "S603", "S607"]
+
+[tool.ruff.lint.pylint]
+max-returns = 8
+max-branches = 15
+max-statements = 60
+max-args = 6
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101", "SLF001", "PLR2004"]
+
+[tool.pylint."messages control"]
+disable = ["all"]
+enable = ["cyclic-import"]
+
+[tool.pylint.reports]
+score = false
+
+[tool.mypy]
+python_version = "3.13"
+files = ["src", "tests"]
+exclude = ["^spikes/"]
+strict = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/bellhop"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/bellhop",
+    "tests",
+    "docs",
+    "README.md",
+    "AGENTS.md",
+    "LICENSE",
+    "pyproject.toml",
+    "uv.lock",
+    "Justfile",
+]
+exclude = ["docs/plans"]
