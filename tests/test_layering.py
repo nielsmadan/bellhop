@@ -13,7 +13,7 @@ LAYERS: tuple[tuple[str, ...], ...] = (
     ("errors", "models"),
     ("paths", "jsonout"),
     ("hls",),
-    ("cli",),
+    ("cli", "testing"),
     ("__main__",),
 )
 
@@ -30,6 +30,7 @@ IMPORTS_ALLOWED: Mapping[str, frozenset[str]] = {
     "jsonout": frozenset({"errors", "models"}),
     "hls": frozenset({"errors", "models", "paths"}),
     "cli": frozenset({"codes", "errors", "hls", "jsonout", "models"}),
+    "testing": frozenset(),
     "__main__": frozenset({"cli"}),
 }
 
@@ -39,6 +40,13 @@ SIBLING_IMPORTS_ALLOWED: Mapping[str, Mapping[str, frozenset[str]]] = {
         "presentation": frozenset(),
         "dispatch": frozenset({"parsing", "presentation"}),
         "__init__": frozenset({"dispatch", "parsing", "presentation"}),
+    },
+    "testing": {
+        "__init__": frozenset(),
+        "screens": frozenset(),
+        "tmux": frozenset(),
+        "agents": frozenset({"screens"}),
+        "run": frozenset({"agents", "screens", "tmux"}),
     },
 }
 

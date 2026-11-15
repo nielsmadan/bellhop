@@ -38,6 +38,10 @@ dependencies and repository hooks; it does not install `bellhop` globally.
   reads hls state files. An hls that cannot answer is `HlsUnavailable` (exit 5), never an empty
   list.
 - `cli`: `parsing`, `presentation` and `dispatch`, wired together in `cli/__init__.py`.
+- `testing`: the live-smoke isolation helper (also used by callboard's smoke tests). `SmokeRun`
+  builds isolated homes under `.cache/smoke/<run>/`, installs an isolated hls consumer and hooks,
+  launches Claude, Codex and Pi in prompting mode on `tmux -L bellhop-smoke` with a scrubbed
+  environment, waits for readiness, and tears everything down.
 
 Internal modules import concrete seams, never the package root. Keep the runtime standard-library
 only (`dependencies = []`).
