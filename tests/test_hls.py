@@ -166,6 +166,9 @@ def test_the_attempt_and_its_retry_share_one_budget() -> None:
     assert clock[0] == 5.0
 
 
+ANSWER_SECONDS = 3.0
+
+
 def test_an_hls_that_answers_in_three_seconds_succeeds_on_the_first_attempt(
     fake_hls: FakeHls,
 ) -> None:
@@ -176,7 +179,10 @@ def test_an_hls_that_answers_in_three_seconds_succeeds_on_the_first_attempt(
         argv: Sequence[str], env: Mapping[str, str], timeout: float
     ) -> subprocess.CompletedProcess[str]:
         given.append(timeout)
-        clock[0] += 3.0
+        if timeout < ANSWER_SECONDS:
+            clock[0] += timeout
+            raise subprocess.TimeoutExpired(list(argv), timeout)
+        clock[0] += ANSWER_SECONDS
         payload = {"protocol": 1, "sessions": [FakeHls.record("pi", "p1")], "problems": []}
         return subprocess.CompletedProcess(list(argv), 0, stdout=json.dumps(payload), stderr="")
 
@@ -185,7 +191,6 @@ def test_an_hls_that_answers_in_three_seconds_succeeds_on_the_first_attempt(
     )
 
     assert [s.session_id for s in result.sessions] == ["p1"]
-    assert given == [4.0]
 
 
 def test_nonzero_exit_is_unavailable(fake_hls: FakeHls) -> None:

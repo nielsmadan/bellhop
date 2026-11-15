@@ -92,17 +92,24 @@ is not delivered. An inside piece in another session answers `error session_mism
 <current-session-id>` and delivers nothing. For a session target bellhop treats that like an
 ended session: `send` finds no usable route before storing anything, and the drainer fails the
 session's pending messages with `session replaced in its process`. For an agent target the
-message stays `pending` and the agent is re-resolved on the next poll. A `deliver` header without
-a session id or byte count gets `error wire_version`. bellhop records the transcript file with the
-message when it takes the offset, and confirms in that file. A session whose `ping` reply lacks `"wire":2`, or names another session, is
-not reachable; `doctor` names a socket on an older wire and says to export the integration again.
+message stays `pending` and the agent is re-resolved on the next poll. The drainer asks the same
+question of a session hls stopped listing while its process lives on, so messages to a session Pi
+replaced with `/new` fail instead of waiting for the 24 h expiry. An inside piece that cannot name
+its own session answers every `deliver` with `error session_mismatch unknown`, and a `ping` naming
+no session counts as not reachable. A `deliver` header without a session id or byte count gets
+`error wire_version`. bellhop records the transcript file with the message when it takes the
+offset, and confirms in that file. A session whose `ping` reply lacks `"wire":2`, or names another
+session or none, is not reachable; `doctor` names a socket on an older wire and says to export the
+integration again. Within one command or drainer tick, bellhop asks each socket once a second at
+most: reachability, replacement and the transcript path come from the same pong.
 
 The Pi extension replies `ok followUp`, `ok steer`, `busy compacting`, `error empty message`,
 `error truncated`, `error session_mismatch <id>`, `error wire_version` and `error unknown header
 <h>`, and drops a
 connection that sends nothing for 5 s or more than 64 KB. Its `transcript` is Pi's session file
-(`--session-dir` and `PI_CODING_AGENT_SESSION_DIR` included); bellhop's Pi reader falls back to
-the per-cwd directory under `PI_CODING_AGENT_DIR` only when the extension reports none.
+(`--session-dir` and `PI_CODING_AGENT_SESSION_DIR` included). bellhop's Pi reader uses, in order:
+hls's transcript path when it names a file, the file it found before for that session (while the
+file exists), the extension's report, then the per-cwd directory under `PI_CODING_AGENT_DIR`.
 
 ## Results (k/n, three repetitions)
 
@@ -112,7 +119,7 @@ the per-cwd directory under `PI_CODING_AGENT_DIR` only when the extension report
 | Claude | hook | 3/3 | 3/3 boundary | 3/3 mid-turn | 3/3 | 3/3 | 3/3 | 3/3 |
 | Claude | modrelay | 3/3 | 3/3 boundary | 3/3 mid-turn | 3/3 | 3/3 | 3/3 | 3/3 |
 | Claude | modsubmit | 3/3 | 3/3 boundary | 3/3 boundary | 3/3 | 3/3 | 3/3 | 3/3 |
-| Codex | daemon-start | 3/3 | 3/3 boundary | 3/3 mid-turn | 3/3 † | not measured | 3/3 | 0/3 |
+| Codex | daemon-start | 3/3 | 3/3 boundary | 3/3 mid-turn | 3/3 † | not measured ‡ | 3/3 | 0/3 |
 | Codex | daemon-queue | 3/3 | 3/3 boundary | – | 3/3 | not measured | 3/3 | 0/3 |
 | Codex | remote-start | 3/3 | 3/3 boundary | 3/3 mid-turn | 3/3 † | not measured | 3/3 | 0/3 |
 | Pi | ext | 3/3 | 3/3 boundary | 3/3 mid-turn | n/a | n/a | 3/3 | 3/3 |
@@ -132,6 +139,10 @@ the per-cwd directory under `PI_CODING_AGENT_DIR` only when the extension report
   tool, was not tried. A cell that was not measured is not a pass, so no Codex candidate clears the
   S3b gate and Codex `now` is degraded to `idle` until Task B5 measures it (ADR 0002). Pi has no
   permission prompts (S3) and no question dialog (S3b), so those are `n/a`.
+- ‡ Task B5 measured S3b through bellhop's own Codex route: 3/3 safe, with
+  `default_mode_request_user_input` enabled in an isolated `CODEX_HOME`, and a `now` push during an
+  open approval prompt (S3) left the prompt open. Codex `now` is `turn/steer` since
+  [ADR 0004](../decisions/0004-codex-now.md).
 - On S2-interrupt the interrupted turn never produced its final answer on Codex (6 of 6) or Pi
   (3 of 3); Claude finished every interrupted turn (12 of 12).
 - Codex S10 fails on every route; see Known limits.
@@ -185,6 +196,32 @@ the per-cwd directory under `PI_CODING_AGENT_DIR` only when the extension report
   only a link to it. The runtime directory's 0700 check therefore does not cover where the socket
   lives, and cleanup must follow the link. Three such sockets from the measurement run were left in
   that directory and removed afterwards by matching exactly those hashes.
+
+- **S3b, measured in Task B5** with `default_mode_request_user_input` enabled in an isolated
+  `CODEX_HOME`: the `request_user_input` dialog stayed open and unanswered after a mid-turn
+  `turn/steer`, 3/3 ([ADR 0004](../decisions/0004-codex-now.md)).
+- A Codex session is listed by hooklinesinker only after its first turn. The control socket link
+  under a long `CODEX_HOME` path can exceed the 104-byte socket limit; bellhop connects through
+  the link's resolved target, and only when that target is a socket owned by the user in a
+  directory nobody else can write to.
+- bellhop's Codex route, as built in B5: `send` asks the app server once (`thread/loaded/list`,
+  then `thread/read` and, for an active thread, `thread/turns/list`) and pushes on a second
+  connection. An idle thread gets `turn/start`; a running turn gets `turn/steer` with its
+  `expectedTurnId` for a `now` message and `busy` otherwise; a thread that is active with no turn
+  listed yet is `busy` ("a turn is starting"); a thread waiting on an approval or a question
+  (`activeFlags`) is `busy` for every push, because Codex drops a steer queued behind a dialog the
+  user then escapes (ADR 0004). A refused `turn/steer` (the turn ended in between)
+  is `busy`, so the message is tried again. Replies are capped at 4 MiB.
+- `bind` from a Codex session records `$CODEX_HOME/app-server-control/app-server-control.sock`
+  from the binding session's own environment, so a sender with another `CODEX_HOME` still reaches
+  that agent; other Codex targets use the sender's `CODEX_HOME` (default `~/.codex`).
+- hls 1.5.1 reports `process: null` for a thread on the shared daemon (not the daemon's pid as
+  B-2's table says for the research harness) and stops listing the daemon's threads when the
+  daemon restarts; it lists a thread again after its next turn. A Codex binding therefore fails
+  ("thread no longer listed") when hls drops the thread or the app-server pid hls reports is gone,
+  and comes back to `live` when hls lists the same thread again with a live (or no) pid. Measured
+  in B5 with `codex app-server daemon restart` on an isolated daemon: the TUI kept working, the
+  binding failed, went `live` after one turn, and a message to the agent was confirmed.
 
 ### 3. Pi
 

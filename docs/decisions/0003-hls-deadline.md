@@ -13,9 +13,11 @@ made an hls that answers in 2.5–5 s fail both attempts where it used to succee
 ## Decision
 
 An hls call gets 5 s in total. The first attempt may use up to 4 s; the retry gets whatever is left.
-The retry exists for an hls that failed fast; a slow hls will be slow again, so the first attempt
-gets most of the time. The `bellhop send` budget stays 10 s: hls 5 s, `ps` 2 s, the endpoint ping
-1 s, the push 2 s.
+The retry exists for a single invocation that hung; a merely slow hls will be slow again, so the
+first attempt gets most of the time. The `bellhop send` budget stays 10 s: hls 5 s, `ps` 1.5 s, one
+route probe 0.5 s (a Pi ping, or one Codex app-server exchange that answers both "is the thread
+loaded" and "is a turn running"), the push 2 s, which leaves 1 s for start-up, SQLite and the
+transcript lookup. The Pi transcript lookup reuses the probe's pong, so it adds no ping.
 
 ## Consequences
 

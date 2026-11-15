@@ -1,23 +1,37 @@
 import json
+from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 
+from bellhop.models import Binding
 from bellhop.routes import RouteSetup, route_finder
+from bellhop.routes.codex import CodexRoute
 from bellhop.routes.fake import FakeRoute
 from bellhop.routes.pi import PiRoute
 from bellhop.transcripts import PlainTranscripts, ReaderSetup, reader_finder
 from conftest import make_session
+
+BINDING = Binding(
+    "nanna", "codex", "live", "x1", None, None, None, 4242, None, "bind", None, datetime.now(UTC)
+)
 
 
 def unused() -> Path:
     raise AssertionError("the runtime directory is not needed here")
 
 
-def test_the_real_finder_has_a_pi_route_and_nothing_else_yet() -> None:
-    find = route_finder(RouteSetup(runtime_dir=unused))
+def test_the_real_finder_routes_pi_and_codex_and_not_claude_yet(tmp_path: Path) -> None:
+    find = route_finder(RouteSetup(runtime_dir=unused, codex_home=tmp_path / ".codex"))
+    bound = replace(BINDING, app_server_socket="/tmp/per-session.sock")
 
     assert isinstance(find(make_session("p1", harness="pi"), None), PiRoute)
     assert find(make_session("c1", harness="claude"), None) is None
-    assert find(make_session("x1", harness="codex"), None) is None
+    assert find(make_session("x1", harness="codex"), None) == CodexRoute(
+        tmp_path / ".codex" / "app-server-control" / "app-server-control.sock"
+    )
+    assert find(make_session("x1", harness="codex"), bound) == CodexRoute(
+        Path("/tmp/per-session.sock")
+    )
 
 
 def test_the_fake_route_takes_outcomes_in_order_and_logs_pushes(tmp_path: Path) -> None:

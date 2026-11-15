@@ -8,7 +8,7 @@ from bellhop.cli import main
 from bellhop.cli.doctor import EXPORT_AGAIN, remove_if_unchanged, socket_inode
 from bellhop.routes.pi import UNLISTED_PI
 from bellhop.store import connect, insert_message
-from conftest import ALPHA, Bell, check_golden, make_message, pong_server
+from conftest import ALPHA, Bell, check_golden, make_message, pong_line, pong_server
 
 
 def checks(payload: dict[str, object]) -> dict[str, tuple[bool, str]]:
@@ -161,7 +161,7 @@ def test_doctor_text_prints_hls_problems_as_warnings(
 def test_a_pi_extension_hls_does_not_list_is_named(bell: Bell, runtime: Path) -> None:
     runtime.mkdir(mode=0o700)
 
-    with pong_server(runtime / "pi-77777.sock"):
+    with pong_server(runtime / "pi-77777.sock", pong_line("p-unlisted")):
         code, payload = bell.run("doctor")
 
     assert code == 1

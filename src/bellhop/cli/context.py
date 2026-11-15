@@ -5,11 +5,12 @@ from datetime import UTC, datetime
 
 from bellhop.config import Config, load_config
 from bellhop.drain import drain_work, follow_bindings, start_drainer
+from bellhop.errors import BellhopError
 from bellhop.hls import SessionList, list_sessions
 from bellhop.identity import ProcessTable, process_table
-from bellhop.models import Binding
+from bellhop.models import Binding, Session
 from bellhop.paths import state_dir
-from bellhop.routes import RouteFinder
+from bellhop.routes import Route, RouteFinder
 from bellhop.store import FILE_NAME, open_store
 from bellhop.transcripts import ReaderFinder
 from bellhop.wiring import Wiring, wire
@@ -69,6 +70,16 @@ class Context:
             self._table = process_table()
             self._table_read = True
         return self._table
+
+    def reachable(self, route: Route, session: Session, *, strict: bool = False) -> bool:
+        try:
+            return route.reachable(session)
+        except BellhopError as error:
+            if strict:
+                raise
+            warning = f"cannot reach {session.harness} sessions: {error}"
+            self.warnings += [] if warning in self.warnings else [warning]
+            return False
 
     def forget_bindings(self) -> None:
         self._bindings = None

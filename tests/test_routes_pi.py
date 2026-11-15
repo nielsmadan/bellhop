@@ -1,4 +1,3 @@
-import json
 import socket
 import threading
 from collections.abc import Callable
@@ -7,8 +6,8 @@ from pathlib import Path
 import pytest
 
 from bellhop.models import PushResult
-from bellhop.routes.pi import PiRoute
-from conftest import make_session
+from bellhop.routes.pi import PONG_SECONDS, PiRoute, Pongs
+from conftest import make_session, pong_line
 
 type Handler = Callable[[socket.socket], bytes]
 
@@ -43,15 +42,14 @@ def serve(path: Path, handler: Handler, received: list[bytes]) -> socket.socket:
 
 
 def pong(session: str | None, wire: int = 2) -> Handler:
-    reply = json.dumps({"wire": wire, "session": session, "transcript": "/t/p1.jsonl"})
-    return lambda conn: f"ok pong {reply}\n".encode()
+    return lambda conn: pong_line(session, wire=wire, transcript="/t/p1.jsonl")
 
 
 def test_a_pi_session_is_reached_at_its_pid_socket_and_ping_delivers_nothing(
     runtime: Path,
 ) -> None:
     received: list[bytes] = []
-    server = serve(runtime / "pi-4242.sock", pong(None), received)
+    server = serve(runtime / "pi-4242.sock", pong("p1"), received)
     route = PiRoute(lambda: runtime)
     try:
         assert route.reachable(make_session("p1", harness="pi", pid=4242)) is True
@@ -97,10 +95,11 @@ def test_a_session_without_a_pid_has_no_socket(runtime: Path) -> None:
     [
         (pong("p1"), True),
         (pong("p-other"), False),
+        (pong(None), False),
         (pong("p1", wire=1), False),
         (lambda conn: b"ok pong\n", False),
     ],
-    ids=["its session", "another session", "older wire", "wire 1 extension"],
+    ids=["its session", "another session", "no session named", "older wire", "wire 1 extension"],
 )
 def test_a_pi_socket_serves_only_its_current_session_on_wire_2(
     runtime: Path, handler: Handler, reachable: bool
@@ -113,6 +112,46 @@ def test_a_pi_socket_serves_only_its_current_session_on_wire_2(
         )
     finally:
         server.close()
+
+
+@pytest.mark.parametrize(
+    ("handler", "replaced"),
+    [
+        (pong("p-new"), True),
+        (pong("p1"), False),
+        (pong(None), False),
+        (pong("p-new", wire=1), False),
+        (lambda conn: b"error no\n", False),
+    ],
+    ids=["another session", "its session", "no session named", "older wire", "no pong"],
+)
+def test_a_session_is_replaced_only_when_the_extension_names_another(
+    runtime: Path, handler: Handler, replaced: bool
+) -> None:
+    server = serve(runtime / "pi-4242.sock", handler, [])
+    try:
+        found = PiRoute(lambda: runtime).replaced(make_session("p1", harness="pi", pid=4242))
+    finally:
+        server.close()
+
+    assert found is replaced
+
+
+def test_one_pong_answers_every_question_asked_within_a_second(runtime: Path) -> None:
+    received: list[bytes] = []
+    clock = [100.0]
+    server = serve(runtime / "pi-4242.sock", pong("p-new"), received)
+    route = PiRoute(lambda: runtime, Pongs(clock=lambda: clock[0]))
+    session = make_session("p1", harness="pi", pid=4242)
+    try:
+        first = (route.reachable(session), route.replaced(session), route.transcript(session))
+        clock[0] += PONG_SECONDS
+        later = route.replaced(session)
+    finally:
+        server.close()
+
+    assert (first, later) == ((False, True, None), True)
+    assert received == [b"ping\n", b"ping\n"]
 
 
 def test_the_route_reports_the_transcript_the_extension_names(runtime: Path) -> None:

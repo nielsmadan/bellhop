@@ -75,12 +75,42 @@ def test_codex_home_links_auth_and_disables_shell_snapshots(tmp_path: Path) -> N
     auth.write_text("{}")
     work = make_work(layout, "w1")
 
-    write_codex_home(layout, [work], auth)
+    write_codex_home(layout, [work], auth, ("default_mode_request_user_input",))
 
     config = (layout.codex_dir / "config.toml").read_text()
-    assert "[features]\nshell_snapshot = false" in config
+    assert "[features]\nshell_snapshot = false\ndefault_mode_request_user_input = true\n" in config
     assert f'[projects."{work.resolve()}"]\ntrust_level = "trusted"' in config
     assert (layout.codex_dir / "auth.json").readlink() == auth
+
+
+@pytest.mark.parametrize(
+    ("features", "written"),
+    [
+        (("shell_snapshot",), "[features]\nshell_snapshot = true\n\n"),
+        (("x_y", "x_y"), "[features]\nshell_snapshot = false\nx_y = true\n\n"),
+    ],
+    ids=["overrides a default", "named twice"],
+)
+def test_codex_features_are_written_once_each(
+    tmp_path: Path, features: tuple[str, ...], written: str
+) -> None:
+    layout = _layout(tmp_path)
+    auth = tmp_path / "auth.json"
+    auth.write_text("{}")
+
+    write_codex_home(layout, [], auth, features)
+
+    assert written in (layout.codex_dir / "config.toml").read_text()
+
+
+def test_codex_feature_names_cannot_add_config(tmp_path: Path) -> None:
+    auth = tmp_path / "auth.json"
+    auth.write_text("{}")
+
+    with pytest.raises(AgentSetupError, match="not a codex feature name"):
+        write_codex_home(
+            _layout(tmp_path), [], auth, ('x = true\n[mcp_servers.x]\ncommand = "sh"',)
+        )
 
 
 def test_codex_home_refuses_without_the_user_auth_file(tmp_path: Path) -> None:

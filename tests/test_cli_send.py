@@ -2,17 +2,33 @@ import contextlib
 import io
 import json
 import socket
+import subprocess
 import sys
 import threading
 import time
 from collections.abc import Iterator
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
 from bellhop.cli import main
+from bellhop.routes.pi import PING_SECONDS
 from bellhop.store import connect
-from conftest import ALPHA, BETA, Bell, FakeHls, check_golden, payload_message, pong_server
+from conftest import (
+    ALPHA,
+    BETA,
+    Bell,
+    FakeHls,
+    check_golden,
+    payload_message,
+    pong_line,
+    pong_server,
+)
+from fake_app_server import app_server
+
+SEND_BUDGET = 9.5
 
 
 def test_an_idle_send_to_a_queueing_route_is_sent(bell: Bell, drainer_starts: list[str]) -> None:
@@ -483,7 +499,8 @@ def stalling_pi(path: Path) -> Iterator[None]:
                 while chunk := conn.recv(65536):
                     data += chunk
                 if data.startswith(b"ping"):
-                    conn.sendall(b'ok pong {"wire":2,"session":"p1","transcript":null}\n')
+                    time.sleep(PING_SECONDS - 0.05)
+                    conn.sendall(pong_line("p1"))
 
     threading.Thread(target=answer, daemon=True).start()
     try:
@@ -494,7 +511,20 @@ def stalling_pi(path: Path) -> Iterator[None]:
             conn.close()
 
 
-def test_send_stays_under_ten_seconds_with_every_dependency_slow(
+def slow_ps(args: list[str], **options: Any) -> subprocess.CompletedProcess[str]:
+    time.sleep(options["timeout"])
+    raise subprocess.TimeoutExpired(args, options["timeout"])
+
+
+@pytest.fixture
+def slow_dependencies(fake_hls: FakeHls, monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_hls.slow_first_call()
+    hung = SimpleNamespace(run=slow_ps, SubprocessError=subprocess.SubprocessError)
+    monkeypatch.setattr("bellhop.identity.subprocess", hung)
+
+
+@pytest.mark.usefixtures("slow_dependencies")
+def test_send_to_pi_stays_under_ten_seconds_with_every_dependency_slow(
     fake_hls: FakeHls,
     monkeypatch: pytest.MonkeyPatch,
     short_tmp: Path,
@@ -503,20 +533,35 @@ def test_send_stays_under_ten_seconds_with_every_dependency_slow(
     fake_hls.respond(
         [FakeHls.record("pi", "p1", process={"pid": 5150, "startedAt": "2026-11-13T09:00:00Z"})]
     )
-    fake_hls.slow_first_call()
     monkeypatch.setenv("BELLHOP_RUNTIME_DIR", str(short_tmp))
     short_tmp.chmod(0o700)
-
-    def slow_table() -> None:
-        time.sleep(1.4)
-
-    monkeypatch.setattr("bellhop.cli.context.process_table", slow_table)
     started = time.monotonic()
     with stalling_pi(short_tmp / "pi-5150.sock"):
         code = main(["send", "p1", "hello", "--json"])
 
     elapsed = time.monotonic() - started
-    assert elapsed < 9.5
+    assert elapsed < SEND_BUDGET
+    assert (code, json.loads(capsys.readouterr().out)["message"]["state"]) == (0, "sent")
+
+
+@pytest.mark.usefixtures("slow_dependencies")
+def test_send_to_codex_stays_under_ten_seconds_with_every_dependency_slow(
+    fake_hls: FakeHls,
+    monkeypatch: pytest.MonkeyPatch,
+    short_tmp: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    fake_hls.respond([FakeHls.record("codex", "c1")])
+    control = short_tmp / "app-server-control"
+    control.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(short_tmp))
+    socket_path = control / "app-server-control.sock"
+    started = time.monotonic()
+    with app_server(socket_path, loaded=["c1"], start_reply="silent", delay=0.15):
+        code = main(["send", "c1", "hello", "--json"])
+
+    elapsed = time.monotonic() - started
+    assert elapsed < SEND_BUDGET
     assert (code, json.loads(capsys.readouterr().out)["message"]["state"]) == (0, "sent")
 
 
@@ -531,9 +576,7 @@ def test_send_to_a_pi_session_its_process_has_left_stores_nothing(
     )
     monkeypatch.setenv("BELLHOP_RUNTIME_DIR", str(short_tmp))
     short_tmp.chmod(0o700)
-    reply = b'ok pong {"wire":2,"session":"p2","transcript":null}\n'
-
-    with pong_server(short_tmp / "pi-5150.sock", reply):
+    with pong_server(short_tmp / "pi-5150.sock", pong_line("p2")):
         code = main(["send", "p1", "hello", "--from", "x", "--json"])
 
     assert (code, json.loads(capsys.readouterr().out)["error"]["code"]) == (4, "no_route")

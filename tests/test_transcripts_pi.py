@@ -82,7 +82,7 @@ def test_each_poll_reads_only_what_was_appended_since_the_last(
         starts.append(start)
         return complete_lines(path, start)
 
-    monkeypatch.setattr("bellhop.transcripts.pi.complete_lines", recording)
+    monkeypatch.setattr("bellhop.transcripts.common.complete_lines", recording)
     size = mixed.stat().st_size
 
     assert reader.contains(session, prefix("bh_999999999999"), since=0) is False
@@ -175,9 +175,14 @@ def test_a_session_with_neither_a_path_nor_a_cwd_has_no_size(tmp_path: Path) -> 
 def test_the_transcript_the_extension_reports_wins_over_the_cwd_lookup(
     tmp_path: Path, mixed: Path
 ) -> None:
+    by_cwd = session_dir(tmp_path, Path("/work/pi"))
+    by_cwd.mkdir(parents=True)
+    header = f'{{"type":"session","id":"{MIXED_ID}","timestamp":"2026-11-14T09:00:00Z"}}\n'
+    (by_cwd / "by-cwd.jsonl").write_text(header)
     session = make_session(MIXED_ID, harness="pi", transcript_path=None, cwd=Path("/work/pi"))
     reader = PiTranscripts(tmp_path, reported=lambda s: mixed)
 
+    assert reader.path(session) == mixed
     assert reader.contains(session, prefix("bh_cccccccccccc"), since=0) is True
 
 

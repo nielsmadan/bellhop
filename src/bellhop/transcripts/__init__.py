@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Protocol
 
 from bellhop.models import Binding, Session
+from bellhop.transcripts.codex import CodexTranscripts
 from bellhop.transcripts.pi import PiTranscripts, Reported, nothing_reported
 
 
@@ -25,6 +26,7 @@ class ReaderSetup:
     pi_agent_dir: Path | None
     fake: bool = False
     pi_reported: Reported = nothing_reported
+    codex_home: Path | None = None
 
 
 class PlainTranscripts:
@@ -57,6 +59,7 @@ def reader_finder(setup: ReaderSetup) -> ReaderFinder:
         plain = PlainTranscripts()
         return lambda session, binding: plain
     readers: Mapping[str, TranscriptReader] = {
-        "pi": PiTranscripts(setup.pi_agent_dir, setup.pi_reported)
+        "pi": PiTranscripts(setup.pi_agent_dir, setup.pi_reported),
+        "codex": CodexTranscripts(setup.codex_home),
     }
     return lambda session, binding: readers.get(session.harness)

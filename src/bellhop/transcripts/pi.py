@@ -1,11 +1,8 @@
-from collections import OrderedDict
 from collections.abc import Callable
 from pathlib import Path
 
 from bellhop.models import Session
-from bellhop.transcripts.common import complete_lines, content_text, first_record, parse_records
-
-CURSOR_LIMIT = 1024
+from bellhop.transcripts.common import Cursors, content_text, first_record
 
 
 def session_dir(agent_dir: Path, cwd: Path) -> Path:
@@ -59,7 +56,7 @@ class PiTranscripts:
     def __init__(self, agent_dir: Path | None, reported: Reported = nothing_reported) -> None:
         self.agent_dir = agent_dir
         self.reported = reported
-        self._cursors: OrderedDict[tuple[Path, str], int] = OrderedDict()
+        self._cursors = Cursors()
         self._found: dict[str, Path] = {}
 
     def directory(self, session: Session) -> Path | None:
@@ -70,14 +67,15 @@ class PiTranscripts:
     def path(self, session: Session) -> Path | None:
         if session.transcript_path is not None and session.transcript_path.is_file():
             return session.transcript_path
-        known = self._found.get(session.session_id)
-        if known is not None:
+        known = self._found.pop(session.session_id, None)
+        if known is not None and known.is_file():
+            self._found[session.session_id] = known
             return known
         directory = self.directory(session)
         found = self.reported(session) or (
             find_session_file(directory, session.session_id) if directory else None
         )
-        if found is not None:
+        if found is not None and found.is_file():
             self._found[session.session_id] = found
         return found
 
@@ -97,17 +95,4 @@ class PiTranscripts:
         path = path or self.path(session)
         if path is None or not path.is_file() or not belongs(path, session):
             return False
-        key = (path, prefix)
-        start = max(since, self._cursors.pop(key, since))
-        try:
-            if path.stat().st_size < start:
-                start = since
-            lines, end = complete_lines(path, start)
-        except OSError:
-            return False
-        if any(delivered(record, prefix) for record in parse_records(lines)):
-            return True
-        self._cursors[key] = end
-        while len(self._cursors) > CURSOR_LIMIT:
-            self._cursors.popitem(last=False)
-        return False
+        return self._cursors.scan(path, prefix, since, delivered)

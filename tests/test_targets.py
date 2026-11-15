@@ -137,7 +137,9 @@ def test_a_reused_pid_does_not_keep_a_binding_alive() -> None:
 def test_a_codex_binding_is_keyed_by_thread_not_pid() -> None:
     codex = binding("nanna", harness="codex", pid=None, session_id="2e2099ff-0000-1111")
 
-    assert refresh_bindings([codex], SESSIONS, {}, NOW) == [codex]
+    table = {4242: Proc(4242, 1, STARTED)}
+
+    assert refresh_bindings([codex], SESSIONS, table, NOW)[0].state == "live"
     assert resolve("nanna", SESSIONS, CONFIG, [codex]).session == SESSIONS[1]
 
 
@@ -148,3 +150,76 @@ def test_bindings_stay_as_they_are_when_the_process_table_is_unavailable() -> No
 def test_agent_of_names_the_live_binding_for_a_session() -> None:
     assert agent_of(SESSIONS[0], [binding("enki")]) == "enki"
     assert agent_of(SESSIONS[0], [binding("enki", state="failed")]) is None
+
+
+def codex_binding(**changes: object) -> Binding:
+    return binding("nanna", **{"harness": "codex", "pid": None, "app_server_pid": 4242, **changes})
+
+
+def test_a_codex_binding_fails_when_its_app_server_exits() -> None:
+    sessions = [make_session("2e2042a9-937c-4e03", harness="codex")]
+
+    after = refresh_bindings([codex_binding()], sessions, {}, NOW)
+
+    assert (after[0].state, after[0].detail) == ("failed", "app server exited")
+
+
+def test_a_codex_binding_fails_when_hls_no_longer_lists_its_thread() -> None:
+    table = {4242: Proc(4242, 1, STARTED)}
+
+    after = refresh_bindings([codex_binding()], [], table, NOW)
+
+    assert (after[0].state, after[0].detail) == ("failed", "thread no longer listed")
+
+
+def test_a_codex_binding_stays_live_while_server_and_thread_live() -> None:
+    sessions = [make_session("2e2042a9-937c-4e03", harness="codex")]
+    table = {4242: Proc(4242, 1, STARTED)}
+
+    assert refresh_bindings([codex_binding()], sessions, table, NOW) == [codex_binding()]
+
+
+def test_a_codex_binding_fails_when_its_app_server_pid_was_reused() -> None:
+    sessions = [make_session("2e2042a9-937c-4e03", harness="codex")]
+    table = {4242: Proc(4242, 1, STARTED + timedelta(hours=1))}
+
+    after = refresh_bindings([codex_binding()], sessions, table, NOW)
+
+    assert (after[0].state, after[0].detail) == ("failed", "app server exited")
+
+
+def test_a_codex_binding_follows_its_thread_to_a_restarted_app_server() -> None:
+    restarted = STARTED + timedelta(minutes=7)
+    sessions = [
+        make_session("2e2042a9-937c-4e03", harness="codex", pid=5151, process_started_at=restarted)
+    ]
+    table = {5151: Proc(5151, 1, restarted)}
+
+    after = refresh_bindings([codex_binding()], sessions, table, NOW)
+
+    assert (after[0].state, after[0].app_server_pid, after[0].process_started_at) == (
+        "live",
+        5151,
+        restarted,
+    )
+
+
+def test_a_starting_codex_binding_waits_for_its_thread() -> None:
+    starting = codex_binding(state="starting", session_id=None, app_server_pid=None)
+
+    assert refresh_bindings([starting], [], {}, NOW) == [starting]
+
+
+def test_a_failed_codex_binding_revives_when_hls_lists_its_thread_again() -> None:
+    dropped = codex_binding(state="failed", detail="thread no longer listed", app_server_pid=None)
+    sessions = [make_session("2e2042a9-937c-4e03", harness="codex", pid=None)]
+
+    after = refresh_bindings([dropped], sessions, {}, NOW)
+
+    assert (after[0].state, after[0].detail) == ("live", None)
+
+
+def test_a_failed_codex_binding_stays_failed_while_its_thread_is_unlisted() -> None:
+    dropped = codex_binding(state="failed", detail="thread no longer listed")
+
+    assert refresh_bindings([dropped], [], {}, NOW) == [dropped]

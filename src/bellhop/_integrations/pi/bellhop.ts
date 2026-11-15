@@ -12,8 +12,9 @@ const TRIPLE_QUOTES = /"""|'''/g;
 
 export type Mode = "followUp" | "steer";
 export type Deliver = (body: string, mode: Mode) => void;
-export type Where = { session: string | null; transcript: string | null };
-export type State = Where & { compacting: boolean };
+export type SessionInfo = { session: string | null; transcript: string | null };
+export type State = SessionInfo & { compacting: boolean };
+export type Request = { header: string; body: string; bodyBytes: number };
 
 export function configuredRuntimeDir(text: string): string | null | undefined {
 	let multiline = false;
@@ -63,8 +64,6 @@ export function ensurePrivateDir(dir: string, uid: number): boolean {
 	}
 }
 
-export type Request = { header: string; body: string; bodyBytes: number };
-
 export function reply(request: Request, state: State, deliver: Deliver): string {
 	const { header, body, bodyBytes } = request;
 	if (header === "ping") {
@@ -77,8 +76,8 @@ export function reply(request: Request, state: State, deliver: Deliver): string 
 	}
 	if (!target || !count || !/^\d+$/.test(count)) return "error wire_version\n";
 	if (Number(count) !== bodyBytes) return "error truncated\n";
-	if (state.session !== null && target !== state.session) {
-		return `error session_mismatch ${state.session}\n`;
+	if (state.session === null || target !== state.session) {
+		return `error session_mismatch ${state.session ?? "unknown"}\n`;
 	}
 	if (!body) return "error empty message\n";
 	if (state.compacting) return "busy compacting\n";
@@ -91,7 +90,7 @@ export function reply(request: Request, state: State, deliver: Deliver): string 
 	return `ok ${mode}\n`;
 }
 
-export function split(raw: Buffer): Request {
+export function parseRequest(raw: Buffer): Request {
 	const cut = raw.indexOf(0x0a);
 	if (cut < 0) return { header: raw.toString("utf8").trim(), body: "", bodyBytes: 0 };
 	const body = raw.subarray(cut + 1);
@@ -110,7 +109,7 @@ export default function bellhop(pi: ExtensionAPI) {
 	let compacting = false;
 	let context: ExtensionContext | undefined;
 	const deliver: Deliver = (body, mode) => pi.sendUserMessage(body, { deliverAs: mode });
-	const where = (): Where => {
+	const where = (): SessionInfo => {
 		try {
 			const manager = context?.sessionManager;
 			const file = manager?.getSessionFile();
@@ -133,7 +132,7 @@ export default function bellhop(pi: ExtensionAPI) {
 			else chunks.push(chunk);
 		});
 		conn.on("end", () => {
-			conn.end(reply(split(Buffer.concat(chunks)), { ...where(), compacting }, deliver));
+			conn.end(reply(parseRequest(Buffer.concat(chunks)), { ...where(), compacting }, deliver));
 		});
 		conn.on("error", () => undefined);
 	};

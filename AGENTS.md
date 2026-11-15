@@ -28,7 +28,8 @@ gate. `just check-static` is the lint, cycle and type pass without the suite. `j
 live tests (`-m smoke`), which are deselected everywhere else. `just setup` installs project
 dependencies and repository hooks; it does not install `bellhop` globally. `just typescript`
 (run by `test`, `check` and `coverage`) installs TypeScript, Pi's types and `@types/node` into
-`.cache/typescript` for the Pi extension type-check, which skips only where node is missing.
+`.cache/typescript` for the Pi extension type-check; it needs npm and the network until that cache
+is filled, and the type-check test skips only where node is missing.
 `just package-check` builds the wheel (uv cache in `.cache/uv`) and checks it carries the extension.
 
 ## Architecture
@@ -45,22 +46,36 @@ dependencies and repository hooks; it does not install `bellhop` globally. `just
   list.
 - `config`, `runtime`: `config.toml` (agents) and the 0700 runtime directory for endpoint sockets.
 - `store`: the SQLite message and binding store (WAL, `BEGIN IMMEDIATE` writes, numbered
-  migrations). Only SQL runs inside a write transaction.
+  migrations; schema 3 records the transcript file a message's offset was taken in). Only SQL runs
+  inside a write transaction.
 - `identity`, `targets`: the calling session (`whoami`) and target resolution; bindings follow
   their process.
 - `envelope`, `routes`, `transcripts`, `delivery`: the text a session receives, the `Route` and
   `TranscriptReader` protocols (with a fake route for tests), and the delivery rules: claim, push
   outside any transaction, record the outcome, confirm from the receiver's transcript.
-  `routes/unix` is the endpoint-socket client (`ping`, `deliver boundary|interrupt`, one reply
-  line within 2 s; the wire is in `docs/reference/routes.md`); `routes/pi` reaches Pi's extension
-  at `<runtime_dir>/pi-<pid>.sock`. A route may raise `BellhopError` for an unusable runtime dir:
-  `send` lets it fail the command, `sessions` reports it as a warning, the drainer per target.
+  `routes/unix` is the endpoint-socket client (wire 2: `ping`, `deliver boundary|interrupt
+  <session-id> <bytes>`, one reply line; connect, write and read share one deadline, 0.5 s for a
+  ping and 2 s for a deliver; the wire is in `docs/reference/routes.md`); `routes/pi` reaches Pi's
+  extension at `<runtime_dir>/pi-<pid>.sock`, sharing one pong per socket per second (`Pongs`)
+  between `reachable`, `replaced` and the reader's transcript lookup. `Route.replaced` is true when
+  the session's process now serves another session; the drainer then fails that session's
+  messages. A route may raise `BellhopError` for an unusable runtime dir: `send` lets it fail the
+  command unless `--or-hold` (a warning and a hold; a `hold` never probes), `sessions` reports it
+  as a warning, the drainer per target.
   `transcripts/pi` reads Pi session files incrementally and counts the envelope prefix only at the
-  start of an entry the session received as input.
+  start of an entry the session received as input. `routes/codex` talks JSON-RPC over a
+  WebSocket on the app server's unix socket (`codex_rpc`, layer 1): the binding's
+  `app_server_socket` (recorded by `bind` from the binding session's `CODEX_HOME`), else
+  `$CODEX_HOME/app-server-control/app-server-control.sock` (the shared daemon), followed only to a
+  socket the user owns in a private directory. `now` steers a running turn (`turn/steer`, ADR
+  0004); a thread waiting on an approval or a question is busy for every push. `transcripts/codex` finds the rollout by `rollout-*-<thread-id>.jsonl` under
+  `$CODEX_HOME/sessions`, in the thread's creation day first. A Codex binding is keyed by its
+  thread: it fails while hls does not list the thread (or the app-server pid hls reports is gone)
+  and comes back to `live` when hls lists the thread again.
 - `wiring`: the one place that turns env and config into the route and reader setups
   (`wire(env, config) -> Wiring`), used by `cli/context` and the drainer. Both finders take the
-  session and its live binding (`targets.binding_for`; the agent's binding for an agent target),
-  which the Codex route and reader will key on.
+  session and its live binding (`targets.binding_for`; the agent's binding for an agent target);
+  the Codex route keys on it.
 - `_integrations/pi/bellhop.ts`: the Pi extension, shipped in the wheel. `bellhop integration
   show pi` prints where it is and where Pi loads extensions; `export pi --to DIR` copies it.
   Its runtime-dir choice mirrors `runtime.runtime_dir` and is pinned by a parity test.
@@ -93,7 +108,8 @@ only (`dependencies = []`).
   replaces the drainer start with a recorder. Shared helpers (`bell`, `make_message`,
   `make_session`, `check_golden`, the session ids and `NOW`) live in `conftest.py`, never in a test
   module.
-- Unit tests use fakes (`tests/fakes/hooklinesinker`) and never spend inference credits. Live tests
+- Unit tests use fakes (`tests/fakes/hooklinesinker`, the Codex app server in
+  `tests/fake_app_server.py`) and never spend inference credits. Live tests
   are marked `smoke` and run only through `just smoke`.
 - New code normally needs no comments or docstrings. Use names and small typed functions. No
   `logging` module.

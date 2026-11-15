@@ -1,8 +1,10 @@
 import json
-from collections.abc import Sequence
+from collections import OrderedDict
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 TEXT_BLOCKS = ("text", "input_text", "output_text")
+CURSOR_LIMIT = 1024
 
 
 def complete_lines(path: Path, start: int) -> tuple[list[bytes], int]:
@@ -44,3 +46,30 @@ def first_record(path: Path) -> dict[str, object] | None:
             return _record(handle.readline())
     except OSError:
         return None
+
+
+class Cursors:
+    def __init__(self) -> None:
+        self._at: OrderedDict[tuple[Path, str], int] = OrderedDict()
+
+    def scan(
+        self,
+        path: Path,
+        prefix: str,
+        since: int,
+        delivered: Callable[[dict[str, object], str], bool],
+    ) -> bool:
+        key = (path, prefix)
+        start = max(since, self._at.pop(key, since))
+        try:
+            if path.stat().st_size < start:
+                start = since
+            lines, end = complete_lines(path, start)
+        except OSError:
+            return False
+        if any(delivered(record, prefix) for record in parse_records(lines)):
+            return True
+        self._at[key] = end
+        while len(self._at) > CURSOR_LIMIT:
+            self._at.popitem(last=False)
+        return False

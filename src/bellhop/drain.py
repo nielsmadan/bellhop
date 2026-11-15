@@ -17,7 +17,7 @@ from bellhop.hls import list_sessions
 from bellhop.identity import SESSION_VARS, ProcessTable, alive, process_table
 from bellhop.models import Binding, Session, TargetKind
 from bellhop.paths import state_dir
-from bellhop.routes import RouteFinder
+from bellhop.routes import Route, RouteFinder
 from bellhop.store import (
     GONE_DETAIL,
     REPLACED_DETAIL,
@@ -142,7 +142,9 @@ def absences(
 
 
 def needs_table(current: Sequence[Binding], absent: Mapping[str, int]) -> bool:
-    followed = any(b.state == "live" and b.pid is not None for b in current)
+    followed = any(
+        b.state == "live" and (b.pid is not None or b.app_server_pid is not None) for b in current
+    )
     return followed or any(count >= GONE_POLLS for count in absent.values())
 
 
@@ -152,9 +154,18 @@ def known_dead(last: Session | None, table: ProcessTable | None) -> bool:
     return not alive(last.pid, last.process_started_at, table)
 
 
-def gone(target: str, state: State, table: ProcessTable | None) -> bool:
-    absent = state.absent.get(target, 0) >= GONE_POLLS
-    return absent and known_dead(state.seen.get(target), table)
+def ended(deps: Deps, state: State, target: str, view: View, route: Route | None) -> str | None:
+    if target in view.present:
+        return (
+            REPLACED_DETAIL if route is not None and route.replaced(view.present[target]) else None
+        )
+    last = state.seen.get(target)
+    if state.absent.get(target, 0) < GONE_POLLS or last is None:
+        return None
+    if known_dead(last, view.table):
+        return GONE_DETAIL
+    found = deps.routes(last, binding_for(last, view.bindings))
+    return REPLACED_DETAIL if found is not None and found.replaced(last) else None
 
 
 def paced(session: Session, state: State, now: datetime) -> bool:
@@ -164,23 +175,20 @@ def paced(session: Session, state: State, now: datetime) -> bool:
 
 def _drain_target(deps: Deps, state: State, target: tuple[TargetKind, str], view: View) -> None:
     kind, name = target
-    if kind == "session" and gone(name, state, view.table):
-        fail_pending(deps.conn, kind, name, GONE_DETAIL, view.now)
-        return
     agent = next((b for b in view.bindings if b.agent == name), None) if kind == "agent" else None
     session = (
         view.present.get(name) if kind == "session" else live_session(agent, view.present.values())
     )
+    binding = agent or (binding_for(session, view.bindings) if session is not None else None)
+    route = deps.routes(session, binding) if session is not None else None
+    detail = ended(deps, state, name, view, route) if kind == "session" else None
+    if detail is not None:
+        fail_pending(deps.conn, kind, name, detail, view.now)
+        return
     message = oldest_pending(deps.conn, kind, name)
     if session is None or message is None or paced(session, state, view.now):
         return
-    binding = agent or binding_for(session, view.bindings)
-    route = deps.routes(session, binding)
-    if route is None or not drainer_may_push(route, session):
-        return
-    if not route.reachable(session):
-        if kind == "session" and route.replaced(session):
-            fail_pending(deps.conn, kind, name, REPLACED_DETAIL, view.now)
+    if route is None or not drainer_may_push(route, session) or not route.reachable(session):
         return
     channel = Channel(route, deps.readers(session, binding))
     push_waiting(deps.conn, message, session, channel, view.now)

@@ -98,7 +98,7 @@ Nothing is stored when one of these is returned (except `interrupted` and `inter
 | `no_route` | 4 | the target is live but has no usable route (and no `--or-hold`), or `--wake` was asked for an agent that is not running |
 | `hls_unavailable` | 5 | hooklinesinker is missing, gave no answer within 5 s (a first attempt of up to 4 s and a retry in the rest), failed, or speaks another protocol |
 | `invalid_environment` | 1 | a relative `XDG_*` or `BELLHOP_RUNTIME_DIR` value |
-| `runtime_dir_unsafe` | 1 | the runtime directory is not a directory owned by the caller with mode 0700 (`send` to a Pi session and `doctor`; `sessions` reports it as a warning and `reachable: false`), or a socket path is too long |
+| `runtime_dir_unsafe` | 1 | the runtime directory is not a directory owned by the caller with mode 0700 (`send` to a Pi session and `doctor`; `sessions`, and `send --or-hold`, report it as a warning and carry on with `reachable: false` or a stored `hold`; a `hold` never checks it), or a socket path is too long |
 | `store_error` | 1 | the store cannot be opened, or has a newer schema than this bellhop |
 | `binding_conflict` | 1 | `bind` to a name a live process of another session holds |
 | `doctor_failed` | 1 | `doctor` found a failed check; the error also carries `checks` and `pruned` |

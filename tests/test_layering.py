@@ -10,7 +10,7 @@ PACKAGE = "bellhop"
 
 LAYERS: tuple[tuple[str, ...], ...] = (
     ("__init__", "codes", "models"),
-    ("errors",),
+    ("errors", "codex_rpc"),
     ("paths", "jsonout", "store", "envelope", "transcripts", "routes"),
     ("config", "identity", "hls"),
     ("runtime", "targets"),
@@ -28,13 +28,14 @@ IMPORTS_ALLOWED: Mapping[str, frozenset[str]] = {
     "__init__": frozenset(),
     "codes": frozenset(),
     "errors": frozenset({"codes", "models"}),
+    "codex_rpc": frozenset(),
     "models": frozenset(),
     "paths": frozenset({"codes", "errors"}),
     "jsonout": frozenset({"errors", "models"}),
     "store": frozenset({"codes", "errors", "models"}),
     "envelope": frozenset({"codes", "errors"}),
     "transcripts": frozenset({"models"}),
-    "routes": frozenset({"codes", "errors", "models"}),
+    "routes": frozenset({"codes", "codex_rpc", "errors", "models"}),
     "delivery": frozenset({"envelope", "models", "routes", "store", "transcripts"}),
     "wiring": frozenset(
         {"config", "errors", "models", "paths", "routes", "runtime", "transcripts"}
@@ -101,12 +102,14 @@ SIBLING_IMPORTS_ALLOWED: Mapping[str, Mapping[str, frozenset[str]]] = {
         "fake": frozenset(),
         "unix": frozenset(),
         "pi": frozenset({"unix"}),
-        "__init__": frozenset({"fake", "pi"}),
+        "codex": frozenset(),
+        "__init__": frozenset({"codex", "fake", "pi"}),
     },
     "transcripts": {
         "common": frozenset(),
         "pi": frozenset({"common"}),
-        "__init__": frozenset({"pi"}),
+        "codex": frozenset({"common"}),
+        "__init__": frozenset({"codex", "pi"}),
     },
     "testing": {
         "__init__": frozenset(),

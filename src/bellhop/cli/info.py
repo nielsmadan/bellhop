@@ -17,24 +17,16 @@ from bellhop.identity import alive
 from bellhop.identity import whoami as identify_caller
 from bellhop.jsonout import agent_object, ok_payload, session_object, whoami_object
 from bellhop.models import Binding, Harness, Session
-from bellhop.routes import Route
+from bellhop.routes.codex import daemon_socket
 from bellhop.store import pending_count, save_binding_unless
 from bellhop.targets import agent_names, agent_of, binding_for
-
-
-def probe(route: Route, session: Session, ctx: Context) -> bool:
-    try:
-        return route.reachable(session)
-    except BellhopError as error:
-        warning = f"cannot reach {session.harness} sessions: {error}"
-        ctx.warnings += [] if warning in ctx.warnings else [warning]
-        return False
+from bellhop.wiring import codex_home
 
 
 def session_row(session: Session, ctx: Context) -> dict[str, object]:
     agent = agent_of(session, ctx.bindings)
     route = ctx.routes(session, binding_for(session, ctx.bindings))
-    reachable = route is not None and probe(route, session, ctx)
+    reachable = route is not None and ctx.reachable(route, session)
     pending = pending_count(ctx.conn, "session", session.session_id) + (
         pending_count(ctx.conn, "agent", agent) if agent else 0
     )
@@ -127,6 +119,11 @@ def _bound_elsewhere(binding: Binding | None, session: Session, ctx: Context) ->
     return binding.session_id != session.session_id
 
 
+def bound_socket(env: Mapping[str, str]) -> str | None:
+    socket = daemon_socket(codex_home(env))
+    return str(socket) if socket is not None else None
+
+
 def bind(args: argparse.Namespace, ctx: Context) -> int:
     name = args.agent
     if not valid_name(name):
@@ -147,8 +144,8 @@ def bind(args: argparse.Namespace, ctx: Context) -> int:
         state="live",
         session_id=session.session_id,
         pid=None if codex else session.pid,
-        process_started_at=None if codex else session.process_started_at,
-        app_server_socket=None,
+        process_started_at=session.process_started_at,
+        app_server_socket=bound_socket(ctx.env) if codex else None,
         app_server_pid=session.pid if codex else None,
         tmux_target=session.tmux_pane,
         cause="bind",

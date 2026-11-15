@@ -36,6 +36,9 @@ from conftest import FAKE_HLS, NOW, STARTED, FakeHls, make_message, make_session
 ENKI = Binding("enki", "claude", "live", "s1", 4242, STARTED, None, None, None, "bind", None, NOW)
 
 
+SLEEP_LIMIT = 10_000
+
+
 @dataclass
 class World:
     conn: sqlite3.Connection
@@ -56,6 +59,7 @@ class World:
         return list(self.sessions)
 
     def sleep(self, seconds: float) -> None:
+        assert len(self.sleeps) < SLEEP_LIMIT, "the drainer never ran out of work"
         self.sleeps.append(seconds)
         self.clock[0] += timedelta(seconds=seconds)
 
@@ -639,3 +643,47 @@ def test_a_replaced_session_fails_its_messages_and_an_agent_waits(world: World) 
     failed = get_message(world.conn, to_session.id)
     assert (failed.state, failed.detail) == ("failed", "session replaced in its process")
     assert get_message(world.conn, to_agent.id).state == "pending"
+
+
+@pytest.mark.parametrize("phase", ["idle", "permission", "compacting", "unknown"])
+def test_a_replaced_session_fails_its_messages_whatever_its_last_phase(
+    world: World, phase: str
+) -> None:
+    world.sessions = [make_session("s1", phase=phase)]
+    stored = insert_message(world.conn, make_message(1))
+    world.route = FakeRoute(is_replaced=True)
+
+    tick(world.deps, State())
+
+    failed = get_message(world.conn, stored.id)
+    assert (failed.state, failed.detail) == ("failed", "session replaced in its process")
+    assert world.route.pushes == []
+
+
+def test_a_session_hls_dropped_from_a_live_process_fails_once_replaced(world: World) -> None:
+    stored = insert_message(world.conn, make_message(1, created_at=NOW))
+    world.route = FakeRoute(outcomes=["busy"] * 10)
+    state = State()
+    tick(world.deps, state)
+    world.sessions = []
+    world.route = FakeRoute(is_replaced=True)
+
+    tick(world.deps, state)
+    tick(world.deps, state)
+    assert get_message(world.conn, stored.id).state == "pending"
+
+    tick(world.deps, state)
+    failed = get_message(world.conn, stored.id)
+    assert (failed.state, failed.detail) == ("failed", "session replaced in its process")
+
+
+def test_a_message_to_a_stopped_codex_agent_does_not_keep_the_drainer(world: World) -> None:
+    stopped = Binding(
+        "nanna", "codex", "live", "gone-thread", None, STARTED, None, 4242, None, "bind", None, NOW
+    )
+    save_binding(world.conn, stopped)
+    insert_message(world.conn, make_message(1, target_kind="agent", target="nanna"))
+
+    assert run(world.deps, OpenLock()) == 0
+
+    assert world.route.pushes == []

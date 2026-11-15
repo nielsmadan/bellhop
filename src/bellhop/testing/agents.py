@@ -15,6 +15,7 @@ MODELS: dict[Agent, str] = {
     "pi": "openrouter/deepseek/deepseek-v4.1-flash",
 }
 CODEX_EFFORT = "low"
+CODEX_FEATURE = re.compile(r"[a-z][a-z0-9_]*")
 PI_THINKING = "off"
 PASSTHROUGH = (
     "PATH",
@@ -212,9 +213,15 @@ def write_claude_home(layout: Layout, works: Sequence[Path], version: str, user_
     )
 
 
-def write_codex_home(layout: Layout, works: Sequence[Path], user_auth: Path) -> None:
+def write_codex_home(
+    layout: Layout, works: Sequence[Path], user_auth: Path, features: Sequence[str] = ()
+) -> None:
     if not user_auth.is_file():
         raise AgentSetupError(f"{user_auth} missing; isolated Codex cannot authenticate")
+    odd = [feature for feature in features if not CODEX_FEATURE.fullmatch(feature)]
+    if odd:
+        raise AgentSetupError(f"not a codex feature name: {', '.join(map(repr, odd))}")
+    switches = {"shell_snapshot": False} | dict.fromkeys(features, True)
     lines = [
         f"model = {json.dumps(MODELS['codex'])}",
         f"model_reasoning_effort = {json.dumps(CODEX_EFFORT)}",
@@ -227,7 +234,7 @@ def write_codex_home(layout: Layout, works: Sequence[Path], user_auth: Path) -> 
         "enabled = false",
         "",
         "[features]",
-        "shell_snapshot = false",
+        *(f"{name} = {json.dumps(on)}" for name, on in switches.items()),
         "",
         "[notice]",
         "hide_full_access_warning = true",

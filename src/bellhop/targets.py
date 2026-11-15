@@ -110,10 +110,38 @@ def resolve(
     raise _not_found(text, names, sessions)
 
 
+def _follow_app_server(
+    binding: Binding, sessions: Sequence[Session], table: ProcessTable, now: datetime
+) -> Binding:
+    if binding.state == "starting":
+        return binding
+    listed = next((s for s in sessions if s.session_id == binding.session_id), None)
+    if listed is None:
+        detail = "thread no longer listed"
+    elif listed.pid is not None and not alive(listed.pid, listed.process_started_at, table):
+        detail = "app server exited"
+    else:
+        current = replace(
+            binding,
+            state="live",
+            detail=None,
+            app_server_pid=listed.pid,
+            process_started_at=listed.process_started_at,
+        )
+        return binding if current == binding else replace(current, updated_at=now)
+    if binding.state == "failed":
+        return binding
+    return replace(binding, state="failed", detail=detail, updated_at=now)
+
+
 def _follow(
     binding: Binding, sessions: Sequence[Session], table: ProcessTable, now: datetime
 ) -> Binding:
-    if binding.state == "failed" or binding.pid is None:
+    if binding.harness == "codex":
+        return _follow_app_server(binding, sessions, table, now)
+    if binding.state == "failed":
+        return binding
+    if binding.pid is None:
         return binding
     if not alive(binding.pid, binding.process_started_at, table):
         return replace(binding, state="failed", detail="process exited", updated_at=now)

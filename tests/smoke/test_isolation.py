@@ -1,5 +1,4 @@
 import json
-import os
 import subprocess
 import sys
 import time
@@ -7,13 +6,10 @@ from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
+from smoke_helpers import REAL_ENV, REAL_HLS, smoke_run
 
-from bellhop.testing.run import SMOKE_SOCKET, SmokeRun
+from bellhop.testing.run import SMOKE_SOCKET
 
-REAL_ENV = dict(os.environ)
-REAL_HOME = Path(REAL_ENV.get("HOME", str(Path.home())))
-REAL_HLS = REAL_HOME / ".local/share/hooklinesinker/bin/hooklinesinker"
-CACHE = Path(__file__).resolve().parents[2] / ".cache" / "smoke"
 PROMPT = "Reply with the single word OK."
 LISTED_WITHIN_SECONDS = 90.0
 
@@ -64,14 +60,7 @@ def _listed(env: Mapping[str, str], root: Path) -> list[dict[str, object]]:
 
 def test_isolated_claude_codex_and_pi_start_appear_and_tear_down_cleanly() -> None:
     consumers_before = _real_consumers()
-    run = SmokeRun(
-        CACHE,
-        REAL_ENV,
-        sops_exec=REAL_HOME / "ac" / "bin" / "sops-exec",
-        hls_source=REAL_HLS,
-        codex_auth=REAL_HOME / ".codex" / "auth.json",
-        user_home=REAL_HOME,
-    )
+    run = smoke_run()
     assert run.socket == SMOKE_SOCKET == "bellhop-smoke"
     with run:
         for agent in ("claude", "codex", "pi"):

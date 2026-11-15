@@ -12,12 +12,14 @@ from bellhop.models import PushResult
 from bellhop.routes.unix import (
     REPLY_LIMIT,
     Pong,
+    deliver_header,
     endpoint_path,
     exchange,
     parse_pong,
     parse_reply,
     ping,
 )
+from conftest import pong_line
 
 type Handler = Callable[[socket.socket], None]
 
@@ -70,7 +72,7 @@ def test_a_reply_that_trickles_past_the_deadline_is_unknown(
     path = endpoint(trickle)
     started = time.monotonic()
 
-    result = exchange(path, "deliver boundary", "x", timeout=0.5)
+    result = exchange(path, deliver_header("boundary", "s1", "x"), "x", timeout=0.5)
 
     assert result == PushResult("unknown", "no reply within 0.5s")
     assert time.monotonic() - started < 1.5
@@ -81,7 +83,7 @@ def test_an_endless_reply_line_is_cut_at_the_limit(endpoint: Callable[[Handler],
         with contextlib.suppress(OSError):
             conn.sendall(b"ok " + b"y" * 10_000 + b"\n")
 
-    result = exchange(endpoint(flood), "deliver boundary", "x")
+    result = exchange(endpoint(flood), deliver_header("boundary", "s1", "x"), "x")
 
     assert (result.outcome, len(result.detail)) == ("accepted", REPLY_LIMIT - 3)
 
@@ -99,10 +101,14 @@ def test_the_wire_is_one_header_line_then_the_envelope(endpoint: Callable[[Handl
     received: list[bytes] = []
     path = endpoint(reads(received))
 
-    result = exchange(path, "deliver boundary", "[bellhop bh_1 from enki] hi")
+    result = exchange(
+        path,
+        deliver_header("boundary", "s1", "[bellhop bh_1 from enki] hi"),
+        "[bellhop bh_1 from enki] hi",
+    )
 
     assert result == PushResult("accepted", "forwarded")
-    assert received == [b"deliver boundary\n[bellhop bh_1 from enki] hi"]
+    assert received == [b"deliver boundary s1 27\n[bellhop bh_1 from enki] hi"]
 
 
 def test_a_missing_or_stale_endpoint_wrote_nothing_and_is_busy(
@@ -114,7 +120,8 @@ def test_a_missing_or_stale_endpoint_wrote_nothing_and_is_busy(
     left.close()
     try:
         results = [
-            exchange(path, "deliver boundary", "hi") for path in (tmp_path / "missing.sock", stale)
+            exchange(path, deliver_header("boundary", "s1", "hi"), "hi")
+            for path in (tmp_path / "missing.sock", stale)
         ]
     finally:
         stale.unlink()
@@ -130,7 +137,7 @@ def test_a_connection_dropped_after_the_write_is_unknown(
         while conn.recv(4096):
             pass
 
-    result = exchange(endpoint(drop), "deliver boundary", "hi")
+    result = exchange(endpoint(drop), deliver_header("boundary", "s1", "hi"), "hi")
 
     assert result == PushResult("unknown", "connection dropped after the write")
 
@@ -143,7 +150,7 @@ def test_no_reply_in_time_is_unknown(endpoint: Callable[[Handler], Path]) -> Non
             pass
         gate.wait(5)
 
-    result = exchange(endpoint(stall), "deliver boundary", "hi", timeout=0.2)
+    result = exchange(endpoint(stall), deliver_header("boundary", "s1", "hi"), "hi", timeout=0.2)
     gate.set()
 
     assert result == PushResult("unknown", "no reply within 0.2s")
@@ -157,7 +164,7 @@ def test_ping_answers_without_delivering(endpoint: Callable[[Handler], Path]) ->
         while chunk := conn.recv(4096):
             data += chunk
         received.append(data)
-        conn.sendall(b'ok pong {"wire":2,"session":"s1","transcript":"/t/s1.jsonl"}\n')
+        conn.sendall(pong_line("s1", transcript="/t/s1.jsonl"))
 
     assert ping(endpoint(pong)) == Pong(2, "s1", Path("/t/s1.jsonl"))
     assert received == [b"ping\n"]
@@ -194,10 +201,12 @@ def test_a_session_mismatch_is_busy_never_rejected() -> None:
 def test_multibyte_text_arrives_intact(endpoint: Callable[[Handler], Path]) -> None:
     received: list[bytes] = []
 
-    result = exchange(endpoint(reads(received)), "deliver interrupt", "héllo ✓ 日本")
+    result = exchange(
+        endpoint(reads(received)), deliver_header("interrupt", "s1", "héllo ✓ 日本"), "héllo ✓ 日本"
+    )
 
     assert result == PushResult("accepted", "forwarded")
-    assert received[0].decode() == "deliver interrupt\nhéllo ✓ 日本"
+    assert received[0].decode() == "deliver interrupt s1 17\nhéllo ✓ 日本"
 
 
 @pytest.mark.parametrize(
@@ -215,7 +224,7 @@ def test_busy_and_error_replies(
             pass
         conn.sendall(reply)
 
-    assert exchange(endpoint(answer), "deliver boundary", "hi") == expected
+    assert exchange(endpoint(answer), deliver_header("boundary", "s1", "hi"), "hi") == expected
 
 
 def test_endpoint_paths_name_harness_and_pid_and_respect_the_socket_limit() -> None:

@@ -1,11 +1,13 @@
 import json
 import os
 import shutil
+import socket
 import stat
 import subprocess
 import tempfile
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -19,6 +21,7 @@ TYPES = ROOT / ".cache" / "typescript" / "node_modules"
 TSC = TYPES / "typescript" / "bin" / "tsc"
 NODE = shutil.which("node")
 UV = shutil.which("uv")
+SEND_BUFFER = 2048
 UV_CACHE = os.environ.get("UV_CACHE_DIR", str(ROOT / ".cache" / "uv"))
 
 FAKE_PI = """
@@ -40,7 +43,8 @@ const ask = (payload) => new Promise((resolve, reject) => {
   c.on("end", () => resolve(buf));
   c.on("error", reject);
 });
-const ctx = { sessionManager: { getSessionId: () => "s1", getSessionFile: () => "/t/s1.jsonl" } };
+let sid = "s1";
+const ctx = { sessionManager: { getSessionId: () => sid, getSessionFile: () => "/t/s1.jsonl" } };
 await handlers.session_start({}, ctx);
 for (let i = 0; i < 50 && !fs.existsSync(socket); i++) await new Promise((r) => setTimeout(r, 20));
 const mode = fs.statSync(socket).mode & 0o777;
@@ -57,6 +61,8 @@ replies.push(await send("boundary", "s1", "cut short", 4000));
 await handlers.session_before_compact({}, ctx);
 replies.push(await send("boundary", "s1", "while compacting"));
 await handlers.session_compact({}, ctx);
+sid = null;
+replies.push(await send("boundary", "s1", "to a session that has no id"));
 await handlers.session_shutdown({ reason: "quit" }, ctx);
 console.log(JSON.stringify({ replies, calls, mode, left: fs.existsSync(socket) }));
 process.exit(0);
@@ -145,7 +151,7 @@ def test_harnesses_without_an_integration_yet_are_usage_errors(
     assert capsys.readouterr().err == "bellhop: no claude integration yet; available: pi\n"
 
 
-@pytest.mark.skipif(NODE is None, reason="node 24 not installed")
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
 def test_the_extension_answers_the_wire_and_cleans_up_its_socket(
     tmp_path: Path, short_tmp: Path
 ) -> None:
@@ -172,6 +178,7 @@ def test_the_extension_answers_the_wire_and_cleans_up_its_socket(
             "error wire_version\n",
             "error truncated\n",
             "busy compacting\n",
+            "error session_mismatch unknown\n",
         ]
         assert outcome["calls"] == [
             {"text": "hello é", "options": {"deliverAs": "followUp"}},
@@ -183,7 +190,7 @@ def test_the_extension_answers_the_wire_and_cleans_up_its_socket(
         shutil.rmtree(runtime, ignore_errors=True)
 
 
-@pytest.mark.skipif(NODE is None, reason="node 24 not installed")
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
 def test_the_extension_will_not_listen_in_a_directory_others_can_read(
     tmp_path: Path, short_tmp: Path
 ) -> None:
@@ -267,7 +274,7 @@ console.log(JSON.stringify(mod.runtimeDir(process.env, process.getuid()) ?? null
 """
 
 
-@pytest.mark.skipif(NODE is None, reason="node 24 not installed")
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
 @pytest.mark.parametrize(
     ("config", "env", "expected"),
     [
@@ -307,7 +314,7 @@ def test_the_extension_picks_the_runtime_dir_bellhop_does(
     assert chosen == (f"/tmp/bellhop-{os.getuid()}" if expected == "default" else expected)
 
 
-@pytest.mark.skipif(NODE is None, reason="node 24 not installed")
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
 def test_a_runtime_dir_entry_in_the_way_does_not_crash_pi(tmp_path: Path) -> None:
     runtime = Path(tempfile.mkdtemp(prefix="bh-way-", dir="/tmp"))
     script = tmp_path / "way.mjs"
@@ -355,10 +362,18 @@ process.exit(0);
 """
 
 
-@pytest.mark.skipif(NODE is None, reason="node 24 not installed")
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+class SmallSendBuffer(socket.socket):
+    def __init__(self, family: int = socket.AF_UNIX) -> None:
+        super().__init__(family)
+        self.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, SEND_BUFFER)
+
+
 def test_a_body_cut_short_by_a_stalled_pi_is_never_delivered(
-    tmp_path: Path, short_tmp: Path
+    tmp_path: Path, short_tmp: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    small = SimpleNamespace(socket=SmallSendBuffer, AF_UNIX=socket.AF_UNIX, SHUT_WR=socket.SHUT_WR)
+    monkeypatch.setattr("bellhop.routes.unix.socket", small)
     script = tmp_path / "stall.mjs"
     script.write_text(STALL)
     body = "[bellhop bh_1 from x] " + "日" * 7900

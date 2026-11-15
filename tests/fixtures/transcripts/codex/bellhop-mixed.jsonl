@@ -1,0 +1,6 @@
+{"timestamp": "2026-11-14T09:00:00Z", "type": "session_meta", "payload": {"id": "01a1d000-0000-7000-8000-00000000c0de", "timestamp": "2026-11-14T09:00:00Z", "cwd": "/work/codex"}}
+{"type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "<environment_context> [bellhop bh_aaaaaaaaaaaa from enki] </environment_context>"}]}}
+{"type": "response_item", "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "I saw [bellhop bh_bbbbbbbbbbbb from enki] somewhere"}]}}
+{"type": "response_item", "payload": {"type": "function_call_output", "output": "[bellhop bh_cccccccccccc from enki] in a file"}}
+{"type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "fwd: [bellhop bh_dddddddddddd from enki] quoted"}]}}
+{"type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "[bellhop bh_eeeeeeeeeeee from enki] please look"}]}}

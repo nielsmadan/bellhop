@@ -3,6 +3,7 @@ import errno
 import os
 import socket
 import stat
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
@@ -14,8 +15,8 @@ from bellhop.drain import drainer_running
 from bellhop.errors import BellhopError
 from bellhop.jsonout import check_object, ok_payload
 from bellhop.paths import state_dir
-from bellhop.routes.pi import UNLISTED_PI
-from bellhop.routes.unix import ping
+from bellhop.routes.pi import PING_SECONDS, UNLISTED_PI
+from bellhop.routes.unix import Pong, ping
 from bellhop.runtime import PRIVATE_MODE, resolve_runtime_dir
 from bellhop.store import SCHEMA_VERSION, orphaned, prune, schema_version
 
@@ -84,24 +85,26 @@ def remove_if_unchanged(path: Path, inode: int) -> bool:
     return True
 
 
-def pi_problems(runtime: Path, listed: set[int]) -> list[str]:
+def answering_pis(runtime: Path) -> dict[str, tuple[int, Pong]]:
     try:
         candidates = sorted(runtime.glob("pi-*.sock"))
     except OSError:
-        return []
+        return {}
     pids = {path: path.stem.removeprefix("pi-") for path in candidates}
-    pongs = {path: ping(path, timeout=1.0) for path, pid in pids.items() if pid.isdigit()}
-    answering = {path: pong for path, pong in pongs.items() if pong is not None}
-    old = [path.name for path, pong in answering.items() if not pong.current]
-    unlisted = [path.name for path in answering if int(pids[path]) not in listed]
-    return [
-        *([f"{', '.join(old)} speaks an older bellhop wire; {EXPORT_AGAIN}"] if old else []),
-        *(
-            [f"hooklinesinker does not list the pid behind {', '.join(unlisted)}; {UNLISTED_PI}"]
-            if unlisted
-            else []
-        ),
-    ]
+    pongs = {path: ping(path, timeout=PING_SECONDS) for path, pid in pids.items() if pid.isdigit()}
+    return {path.name: (int(pids[path]), pong) for path, pong in pongs.items() if pong is not None}
+
+
+def pi_problems(answering: Mapping[str, tuple[int, Pong]], listed: set[int]) -> list[str]:
+    old = [name for name, (_, pong) in answering.items() if not pong.current]
+    unlisted = [name for name, (pid, _) in answering.items() if pid not in listed]
+    problems = []
+    if old:
+        problems.append(f"{', '.join(old)} speaks an older bellhop wire; {EXPORT_AGAIN}")
+    if unlisted:
+        names = ", ".join(unlisted)
+        problems.append(f"hooklinesinker does not list the pid behind {names}; {UNLISTED_PI}")
+    return problems
 
 
 def _pi(ctx: Context, runtime: Path) -> Check | None:
@@ -109,7 +112,7 @@ def _pi(ctx: Context, runtime: Path) -> Check | None:
         listed = {s.pid for s in ctx.sessions.sessions if s.pid is not None}
     except BellhopError:
         return None
-    problems = pi_problems(runtime, listed)
+    problems = pi_problems(answering_pis(runtime), listed)
     if not problems:
         return Check("pi sessions", True, "every answering pi extension is listed and current")
     return Check("pi sessions", False, "; ".join(problems))

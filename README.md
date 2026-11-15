@@ -6,9 +6,11 @@ asked.
 
 Status: early development. The store, the drainer and every command below work against
 hooklinesinker, except `send --wake`, which answers `no_route` (exit 4) until launching lands. Pi
-sessions are reachable through bellhop's Pi extension; the Claude and Codex routes arrive in later
-releases, so until then such a session has no route and `send` answers `no_route` (or stores a
-`hold` with `--or-hold`).
+sessions are reachable through bellhop's Pi extension, and Codex sessions attached to an app server
+(the shared daemon, which a plain `codex` starts by default) through its JSON-RPC socket; a
+stand-alone `codex --no-daemon` has no route. The Claude route arrives in a later release, so until
+then a Claude session has no route and `send` answers `no_route` (or stores a `hold` with
+`--or-hold`).
 
 Messages are unauthenticated: everything runs as one user, and sender names are self-asserted.
 
@@ -49,7 +51,14 @@ agents are configured in `$XDG_CONFIG_HOME/bellhop/config.toml`. Every `--json` 
 Pi is reached through bellhop's Pi extension: `bellhop integration export pi --to
 ~/.pi/agent/extensions` and Pi loads it at start. hooklinesinker 1.5.1 lists a Pi session only
 when Pi runs through an executable named `pi`; `bellhop doctor` names an extension socket whose
-session hooklinesinker does not list.
+session hooklinesinker does not list. Export the extension again after upgrading bellhop: an
+extension that speaks an older wire is not reachable (`send` answers `no_route`), and `doctor`
+names its socket.
+
+Codex `now` steers the running turn (`turn/steer`); `idle` waits for the thread to go idle. bellhop
+reads `CODEX_HOME` (default `~/.codex`) to find the daemon's socket and the rollouts; `bind` from a
+Codex session records that session's socket, so an agent with its own `CODEX_HOME` stays reachable
+from any sender.
 
 bellhop runs the `hooklinesinker` named by `$BELLHOP_HOOKLINESINKER`, else
 `$XDG_DATA_HOME/hooklinesinker/bin/hooklinesinker`, else the one on `PATH`.

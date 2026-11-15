@@ -1,3 +1,4 @@
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -7,20 +8,43 @@ from bellhop.routes.unix import Pong, deliver_header, endpoint_path, exchange, p
 
 NAME = "pi-extension"
 PING_SECONDS = 0.5
+PONG_SECONDS = 1.0
 UNLISTED_PI = (
     "hooklinesinker 1.5.1 lists Pi only when it runs through an executable named pi (ADR 0002)"
 )
 
 
 def serves(pong: Pong | None, session: Session) -> bool:
-    if pong is None or not pong.current:
-        return False
-    return pong.session is None or pong.session == session.session_id
+    return pong is not None and pong.current and pong.session == session.session_id
+
+
+def replaced_by(pong: Pong | None, session: Session) -> bool:
+    return (
+        pong is not None
+        and pong.current
+        and pong.session is not None
+        and pong.session != session.session_id
+    )
+
+
+@dataclass
+class Pongs:
+    clock: Callable[[], float] = time.monotonic
+    asked: dict[Path, tuple[float, Pong | None]] = field(default_factory=dict)
+
+    def ask(self, path: Path) -> Pong | None:
+        now = self.clock()
+        fresh = {p: seen for p, seen in self.asked.items() if now - seen[0] < PONG_SECONDS}
+        if path not in fresh:
+            fresh[path] = (now, ping(path, timeout=PING_SECONDS))
+        self.asked = fresh
+        return fresh[path][1]
 
 
 @dataclass(frozen=True)
 class PiRoute:
     runtime_dir: Callable[[], Path]
+    pongs: Pongs = field(default_factory=Pongs, compare=False)
     name: str = field(default=NAME, init=False)
     can_interrupt: bool = field(default=True, init=False)
     queues_until_idle: bool = field(default=True, init=False)
@@ -32,14 +56,13 @@ class PiRoute:
 
     def pong(self, session: Session) -> Pong | None:
         path = self.socket(session)
-        return ping(path, timeout=PING_SECONDS) if path is not None else None
+        return self.pongs.ask(path) if path is not None else None
 
     def reachable(self, session: Session) -> bool:
         return serves(self.pong(session), session)
 
     def replaced(self, session: Session) -> bool:
-        pong = self.pong(session)
-        return pong is not None and pong.current and pong.session not in (None, session.session_id)
+        return replaced_by(self.pong(session), session)
 
     def transcript(self, session: Session) -> Path | None:
         pong = self.pong(session)

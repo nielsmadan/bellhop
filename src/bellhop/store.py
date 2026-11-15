@@ -81,12 +81,12 @@ DELIVERABLE = """((state = 'pending' AND urgency != 'hold' AND (target_kind = 's
     OR EXISTS (SELECT 1 FROM bindings WHERE bindings.agent = messages.target
     AND bindings.state IN ('live', 'starting'))))
     OR state = 'sending')"""
+CONFIRMABLE = """state = 'sent' AND transcript_offset IS NOT NULL AND session_id IS NOT NULL
+    AND sent_at >= ?"""
 SWEEP_SQL = f"""UPDATE messages SET state = 'sent', detail = 'outcome unknown'
     WHERE {OPEN} AND state = 'sending' AND sent_at < ?"""
-AWAITING_SQL = f"""SELECT * FROM messages WHERE {OPEN} AND state = 'sent'
-    AND transcript_offset IS NOT NULL AND session_id IS NOT NULL AND sent_at >= ? ORDER BY seq"""
-HAS_WORK_SQL = f"""SELECT 1 FROM messages WHERE {OPEN} AND ({DELIVERABLE}
-    OR (state = 'sent' AND transcript_offset IS NOT NULL AND sent_at >= ?))
+AWAITING_SQL = f"SELECT * FROM messages WHERE {OPEN} AND {CONFIRMABLE} ORDER BY seq"
+HAS_WORK_SQL = f"""SELECT 1 FROM messages WHERE {OPEN} AND ({DELIVERABLE} OR ({CONFIRMABLE}))
     UNION ALL SELECT 1 FROM bindings WHERE state = 'starting' LIMIT 1"""
 OUTCOME_STATES: Mapping[PushOutcome, MessageState] = {
     "accepted": "sent",

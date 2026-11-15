@@ -119,6 +119,7 @@ def isolated_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.delenv("BELLHOP_RUNTIME_DIR", raising=False)
     monkeypatch.delenv("BELLHOP_FAKE_ROUTES", raising=False)
     monkeypatch.delenv("PI_CODING_AGENT_DIR", raising=False)
+    monkeypatch.delenv("CODEX_HOME", raising=False)
     monkeypatch.delenv("PI_CODING_AGENT_SESSION_DIR", raising=False)
     for name in ("CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "PI_SESSION_ID"):
         monkeypatch.delenv(name, raising=False)
@@ -305,10 +306,13 @@ def short_tmp() -> Iterator[Path]:
     shutil.rmtree(path, ignore_errors=True)
 
 
+def pong_line(session: str | None, *, wire: int = 2, transcript: str | None = None) -> bytes:
+    fields = {"wire": wire, "session": session, "transcript": transcript}
+    return f"ok pong {json.dumps(fields)}\n".encode()
+
+
 @contextmanager
-def pong_server(
-    path: Path, reply: bytes = b'ok pong {"wire":2,"session":null,"transcript":null}\n'
-) -> Iterator[None]:
+def pong_server(path: Path, reply: bytes) -> Iterator[None]:
     server = socket.socket(socket.AF_UNIX)
     server.bind(str(path))
     server.listen(4)

@@ -4,7 +4,8 @@ from pathlib import Path
 import pytest
 
 from bellhop.cli import main
-from conftest import ALPHA, BETA, Bell, FakeHls, check_golden, pong_server
+from conftest import ALPHA, BETA, Bell, FakeHls, check_golden, pong_line, pong_server
+from fake_app_server import app_server
 
 
 def test_sessions_report_agent_route_reachability_and_pending(
@@ -168,7 +169,7 @@ def test_sessions_ping_a_pi_extension_for_reachable_and_route(
     fake_hls.respond(
         [FakeHls.record("pi", "p-live", process=process), FakeHls.record("pi", "p-quiet")]
     )
-    with pong_server(runtime / "pi-5150.sock"):
+    with pong_server(runtime / "pi-5150.sock", pong_line("p-live")):
         assert main(["sessions", "--json"]) == 0
 
     rows = {row["session_id"]: row for row in json.loads(capsys.readouterr().out)["sessions"]}
@@ -235,3 +236,21 @@ def test_holds_to_pi_survive_an_unsafe_runtime_dir(
 
     stored = json.loads(capsys.readouterr().out)["message"]
     assert (stored["urgency"], stored["state"]) == ("hold", "pending")
+
+
+def test_a_codex_binding_keeps_the_app_server_of_the_session_that_bound(
+    bell: Bell, monkeypatch: pytest.MonkeyPatch, short_tmp: Path
+) -> None:
+    control = short_tmp / "codex-home" / "app-server-control"
+    control.mkdir(parents=True)
+    monkeypatch.delenv("BELLHOP_FAKE_ROUTES")
+    monkeypatch.setenv("CODEX_THREAD_ID", BETA)
+    monkeypatch.setenv("CODEX_HOME", str(short_tmp / "codex-home"))
+    with app_server(control / "app-server-control.sock", loaded=[BETA]) as server:
+        bell.run("bind", "nanna")
+        monkeypatch.delenv("CODEX_THREAD_ID")
+        monkeypatch.delenv("CODEX_HOME")
+        code, payload = bell.run("send", "nanna", "hi", "--from", "x")
+
+    assert (code, payload["message"]["state"]) == (0, "sent")
+    assert server.methods()[-1] == "turn/start"

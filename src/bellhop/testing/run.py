@@ -107,6 +107,7 @@ class SmokeRun:
     hls_source: Path | None = None
     codex_auth: Path | None = None
     user_home: Path | None = None
+    codex_features: tuple[str, ...] = ()
     run_id: str = field(default_factory=new_run_id)
     base: Path = BASE
     launched: dict[str, Launched] = field(default_factory=dict)
@@ -229,7 +230,7 @@ class SmokeRun:
                     self.layout, works, self.binary("claude").version, self.paths.user_home
                 )
             case "codex":
-                write_codex_home(self.layout, works, self.paths.codex_auth)
+                write_codex_home(self.layout, works, self.paths.codex_auth, self.codex_features)
             case "pi":
                 write_pi_home(self.layout, self.binary("pi").version)
 

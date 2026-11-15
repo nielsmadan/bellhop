@@ -65,29 +65,18 @@ def target_label(target: Target) -> str:
     return target.agent or target.title or target.name
 
 
-def probe_route(route: Route, session: Session, args: argparse.Namespace, ctx: Context) -> bool:
-    try:
-        return route.reachable(session)
-    except BellhopError as error:
-        if not args.or_hold:
-            raise
-        ctx.warnings.append(f"cannot reach {session.harness} sessions: {error}")
-        return False
-
-
 def choose(target: Target, urgency: Urgency, args: argparse.Namespace, ctx: Context) -> Delivery:
     session = target.session
     if urgency == "hold":
         return Delivery(session, None, urgency, None)
-    route = ctx.routes(session, binding_for(session, ctx.bindings)) if session is not None else None
-    usable = route is not None and session is not None and probe_route(route, session, args, ctx)
     if session is None:
         if args.wake:
             raise BellhopError(
                 f"cannot wake '{target_label(target)}': launch is not available yet", code=NO_ROUTE
             )
         return Delivery(None, None, urgency, None)
-    if usable:
+    route = ctx.routes(session, binding_for(session, ctx.bindings))
+    if route is not None and ctx.reachable(route, session, strict=not args.or_hold):
         return Delivery(session, route, urgency, None)
     if args.or_hold:
         return Delivery(session, None, "hold", urgency)

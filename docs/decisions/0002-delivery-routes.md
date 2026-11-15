@@ -23,7 +23,7 @@ that passes S2 mid-turn, else degrades to `idle`.
 | Harness | `idle` route | `now` route | Route name |
 |---|---|---|---|
 | Claude | MCP relay, frame `priority: "later"` | the same relay, frame `priority: "next"` | `claude-relay` |
-| Codex | the app server the session is attached to: wait until the thread is idle, then `turn/start` | degraded to `idle` (`degraded_from: "now"`) until S3b is measured | `codex-app-server` |
+| Codex | the app server the session is attached to: wait until the thread is idle, then `turn/start` | degraded to `idle` (`degraded_from: "now"`) until S3b is measured (superseded by [ADR 0004](0004-codex-now.md): `turn/steer`) | `codex-app-server` |
 | Pi | extension, `sendUserMessage(text, { deliverAs: "followUp" })` | the same extension, `deliverAs: "steer"` | `pi-extension` |
 
 - **Claude.** No candidate failed S3 or S3b. The MCP relay, the hook-started relay and the
@@ -48,6 +48,7 @@ that passes S2 mid-turn, else degrades to `idle`.
   and has no interrupt. `turn/steer` on the same connection passed S2 mid-turn 3/3, but with S3b
   not measured no Codex candidate passes the gate, so Codex `now` is degraded to `idle`
   (`degraded_from: "now"`) until Task B5 measures S3b in a mode where Codex shows a question dialog.
+  B5 measured it; [ADR 0004](0004-codex-now.md) makes `turn/steer` Codex's `now` route.
   The route does not queue to the boundary itself; bellhop's drainer waits until the thread is idle.
   A stand-alone Codex session stays `hold`-only.
 - **Pi.** S3 and S3b are `n/a`; the extension passed S1, S7 and S10 3/3, `followUp` waited for the
@@ -59,7 +60,8 @@ Known limits, each measured, with what bellhop does about it:
 
 - **Codex S3b is not measured.** In its default mode Codex opened no question dialog, and plan or
   collaboration mode was not tried. Codex `now` is therefore degraded to `idle` until Task B5
-  measures S3b; only then can `turn/steer` become Codex's `now` route.
+  measures S3b; only then can `turn/steer` become Codex's `now` route. Superseded by
+  [ADR 0004](0004-codex-now.md): B5 measured S3b 3/3 safe.
 - **A Codex or Pi `now` push displaces the running turn's own answer.** In S2-interrupt the
   interrupted turn never produced its final answer on Codex (6 of 6) or Pi (3 of 3); Claude
   finished every interrupted turn (12 of 12).
