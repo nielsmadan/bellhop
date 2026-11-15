@@ -14,14 +14,17 @@ from bellhop.codes import DOCTOR_FAILED
 from bellhop.drain import drainer_running
 from bellhop.errors import BellhopError
 from bellhop.jsonout import check_object, ok_payload
+from bellhop.models import Harness
 from bellhop.paths import state_dir
-from bellhop.routes.pi import PING_SECONDS, UNLISTED_PI
-from bellhop.routes.unix import Pong, ping
+from bellhop.routes import ENDPOINTS
+from bellhop.routes.endpoint import PING_SECONDS, EndpointKind
+from bellhop.routes.unix import WIRE, Pong, ping
 from bellhop.runtime import PRIVATE_MODE, resolve_runtime_dir
 from bellhop.store import SCHEMA_VERSION, orphaned, prune, schema_version
 
 PRUNE_AGE = timedelta(days=30)
-EXPORT_AGAIN = "export the integration again: bellhop integration export pi --to <dir>"
+NEWER_WIRE = "upgrade bellhop to match the integration"
+UNVERSIONED_WIRE = 1
 REFUSED = frozenset({errno.ECONNREFUSED, errno.ENOENT})
 
 
@@ -85,37 +88,55 @@ def remove_if_unchanged(path: Path, inode: int) -> bool:
     return True
 
 
-def answering_pis(runtime: Path) -> dict[str, tuple[int, Pong]]:
+def answering_endpoints(runtime: Path, harness: str) -> dict[str, tuple[int, Pong]]:
     try:
-        candidates = sorted(runtime.glob("pi-*.sock"))
+        candidates = sorted(runtime.glob(f"{harness}-*.sock"))
     except OSError:
         return {}
-    pids = {path: path.stem.removeprefix("pi-") for path in candidates}
+    pids = {path: path.stem.removeprefix(f"{harness}-") for path in candidates}
     pongs = {path: ping(path, timeout=PING_SECONDS) for path, pid in pids.items() if pid.isdigit()}
     return {path.name: (int(pids[path]), pong) for path, pong in pongs.items() if pong is not None}
 
 
-def pi_problems(answering: Mapping[str, tuple[int, Pong]], listed: set[int]) -> list[str]:
-    old = [name for name, (_, pong) in answering.items() if not pong.current]
-    unlisted = [name for name, (pid, _) in answering.items() if pid not in listed]
-    problems = []
-    if old:
-        problems.append(f"{', '.join(old)} speaks an older bellhop wire; {EXPORT_AGAIN}")
+def wire_problem(kind: EndpointKind, name: str, wire: int) -> str:
+    hint = kind.old_wire if wire < WIRE else NEWER_WIRE
+    return f"{name} speaks bellhop wire {wire}, this bellhop wire {WIRE}; {hint}"
+
+
+def endpoint_problems(
+    kind: EndpointKind, pongs: Mapping[str, tuple[int, Pong]], listed: set[int]
+) -> list[str]:
+    unlisted = [name for name, (pid, _) in pongs.items() if pid not in listed]
+    nameless = [
+        name
+        for name, (pid, pong) in pongs.items()
+        if pid in listed and pong.current and pong.session is None
+    ]
+    problems = [
+        wire_problem(kind, name, UNVERSIONED_WIRE if pong.wire is None else pong.wire)
+        for name, (_, pong) in pongs.items()
+        if not pong.current
+    ]
+    if nameless:
+        problems.append(f"{', '.join(nameless)} answers but cannot name its session")
     if unlisted:
         names = ", ".join(unlisted)
-        problems.append(f"hooklinesinker does not list the pid behind {names}; {UNLISTED_PI}")
+        why = f"; {kind.unlisted}" if kind.unlisted else ""
+        problems.append(f"hooklinesinker does not list the pid behind {names}{why}")
     return problems
 
 
-def _pi(ctx: Context, runtime: Path) -> Check | None:
+def _endpoint(ctx: Context, runtime: Path, harness: Harness) -> Check | None:
     try:
         listed = {s.pid for s in ctx.sessions.sessions if s.pid is not None}
     except BellhopError:
         return None
-    problems = pi_problems(answering_pis(runtime), listed)
+    kind = ENDPOINTS[harness]
+    problems = endpoint_problems(kind, answering_endpoints(runtime, harness), listed)
+    name = f"{harness} sessions"
     if not problems:
-        return Check("pi sessions", True, "every answering pi extension is listed and current")
-    return Check("pi sessions", False, "; ".join(problems))
+        return Check(name, True, f"every answering {harness} {kind.piece} is listed and current")
+    return Check(name, False, "; ".join(problems))
 
 
 def _hls(ctx: Context) -> Check:
@@ -171,8 +192,8 @@ def run_checks(ctx: Context) -> tuple[list[Check], Path | None]:
         dead = dead_sockets(runtime_path)
         names = ", ".join(path.name for path in dead)
         checks.append(Check("sockets", not dead, f"dead: {names}" if dead else "none dead"))
-        pi = _pi(ctx, runtime_path)
-        checks += [pi] if pi is not None else []
+        found = [_endpoint(ctx, runtime_path, harness) for harness in ENDPOINTS]
+        checks += [check for check in found if check is not None]
     return checks, runtime_path
 
 

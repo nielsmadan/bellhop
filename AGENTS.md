@@ -30,7 +30,8 @@ dependencies and repository hooks; it does not install `bellhop` globally. `just
 (run by `test`, `check` and `coverage`) installs TypeScript, Pi's types and `@types/node` into
 `.cache/typescript` for the Pi extension type-check; it needs npm and the network until that cache
 is filled, and the type-check test skips only where node is missing.
-`just package-check` builds the wheel (uv cache in `.cache/uv`) and checks it carries the extension.
+`just package-check` builds the wheel (uv cache in `.cache/uv`) and checks it carries the Pi
+extension and Claude's MCP config.
 
 ## Architecture
 
@@ -55,9 +56,10 @@ is filled, and the type-check test skips only where node is missing.
   outside any transaction, record the outcome, confirm from the receiver's transcript.
   `routes/unix` is the endpoint-socket client (wire 2: `ping`, `deliver boundary|interrupt
   <session-id> <bytes>`, one reply line; connect, write and read share one deadline, 0.5 s for a
-  ping and 2 s for a deliver; the wire is in `docs/reference/routes.md`); `routes/pi` reaches Pi's
-  extension at `<runtime_dir>/pi-<pid>.sock`, sharing one pong per socket per second (`Pongs`)
-  between `reachable`, `replaced` and the reader's transcript lookup. `Route.replaced` is true when
+  ping and 2 s for a deliver; the wire is in `docs/reference/routes.md`); `routes/endpoint`
+  (`EndpointRoute`) reaches an inside piece at `<runtime_dir>/<harness>-<pid>.sock` for every
+  harness in `routes.ENDPOINTS` (Claude's relay, Pi's extension), sharing one pong per socket per
+  second (`Pongs`) between `reachable`, `replaced` and the reader's transcript lookup. `Route.replaced` is true when
   the session's process now serves another session; the drainer then fails that session's
   messages. A route may raise `BellhopError` for an unusable runtime dir: `send` lets it fail the
   command unless `--or-hold` (a warning and a hold; a `hold` never probes), `sessions` reports it
@@ -69,7 +71,7 @@ is filled, and the type-check test skips only where node is missing.
   `$CODEX_HOME/app-server-control/app-server-control.sock` (the shared daemon), followed only to a
   socket the user owns in a private directory. `now` steers a running turn (`turn/steer`, ADR
   0004); a thread waiting on an approval or a question is busy for every push. `transcripts/codex` finds the rollout by `rollout-*-<thread-id>.jsonl` under
-  `$CODEX_HOME/sessions`, in the thread's creation day first. A Codex binding is keyed by its
+  `$CODEX_HOME/sessions`, only in the thread's UUIDv7 creation day and the days either side. A Codex binding is keyed by its
   thread: it fails while hls does not list the thread (or the app-server pid hls reports is gone)
   and comes back to `live` when hls lists the thread again.
 - `wiring`: the one place that turns env and config into the route and reader setups
@@ -79,6 +81,18 @@ is filled, and the type-check test skips only where node is missing.
 - `_integrations/pi/bellhop.ts`: the Pi extension, shipped in the wheel. `bellhop integration
   show pi` prints where it is and where Pi loads extensions; `export pi --to DIR` copies it.
   Its runtime-dir choice mirrors `runtime.runtime_dir` and is pinned by a parity test.
+- `relay`: the Claude inside piece, `bellhop _relay`, an MCP stdio server with no tools. It
+  names its socket after its parent Claude (an ancestor only when that ancestor's registry entry
+  names the session the relay started in), reads its session and transcript from
+  `$CLAUDE_CONFIG_DIR/sessions/<pid>.json` on every request, refuses another session's `deliver`,
+  and forwards a frame (`priority: "later"` for a boundary, `"next"` for an interrupt) to the
+  messaging socket and child token in its own environment. One relay per Claude holds
+  `claude-<pid>.lock` (a second one waits and takes over); it removes only its own socket, on
+  stdin EOF, SIGTERM, SIGHUP, SIGINT or when its parent goes. ADR 0005 records the Claude
+  internals it relies on. `_integrations/claude/bellhop-mcp.json`
+  is the MCP config `integration export claude` writes. `transcripts/claude` counts a received
+  peer, channel or plugin entry (a `user` record or a `queued_command` attachment) whose text,
+  after Claude's peer wrapper line, starts with the envelope prefix.
 - `drain`: the user-wide background drainer (`bellhop _drain`, one `flock`), which pushes waiting
   messages and confirms sent ones. Its loop takes its clock, hls, routes, readers and process table
   as arguments, and one failing target never stops the others. It is spawned with `python -I` from

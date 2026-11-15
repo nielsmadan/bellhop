@@ -28,8 +28,7 @@ def rollout(sessions: Path, thread_id: str, zone: tzinfo | None = None) -> Path 
         dated = sorted(path for path in (sessions / day).glob(pattern) if path.is_file())
         if dated:
             return dated[-1]
-    found = sorted(path for path in sessions.rglob(pattern) if path.is_file())
-    return found[-1] if found else None
+    return None
 
 
 def belongs(path: Path, session: Session) -> bool:

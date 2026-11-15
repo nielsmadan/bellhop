@@ -197,3 +197,14 @@ def test_a_reported_transcript_pi_has_not_written_yet_starts_at_zero(tmp_path: P
 
     assert offset == 0
     assert reader.contains(session, prefix("bh_cccccccccccc"), since=0) is True
+
+
+def test_a_recorded_file_of_another_session_never_confirms(mixed: Path) -> None:
+    session = make_session("another-pi-session", harness="pi", transcript_path=None)
+
+    assert (
+        PiTranscripts(Path("/none")).contains(
+            session, prefix("bh_cccccccccccc"), since=0, path=mixed
+        )
+        is False
+    )

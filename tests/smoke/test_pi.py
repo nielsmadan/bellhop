@@ -7,34 +7,26 @@ import pytest
 from smoke_helpers import (
     CONFIRM,
     Cell,
+    NotBusy,
     bellhop,
     harness_rows,
     jsonl_records,
     message,
     run_named,
     smoke_run,
-    stop_drainer,
+    submit_until,
+    text_of,
     token,
     wait_for,
 )
 
-from bellhop.testing.run import SmokeRun
+from bellhop.testing.run import SmokeRun, stop_drainer
 
 pytestmark = pytest.mark.smoke
 
 
 def records(pi_dir: Path) -> list[tuple[Path, int, dict[str, object]]]:
     return jsonl_records(pi_dir / "sessions", "*.jsonl")
-
-
-def text_of(record: Mapping[str, object]) -> str:
-    message = record.get("message")
-    content = message.get("content") if isinstance(message, dict) else None
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        return "\n".join(str(b.get("text", "")) for b in content if isinstance(b, dict))
-    return ""
 
 
 def role(record: Mapping[str, object]) -> str:
@@ -97,11 +89,14 @@ class PiCells:
         return bool(wait_for(lambda: not self.turn_open(), 180, 1.0))
 
     def busy_with(self, done: str) -> bool:
-        self.type(
-            f"Run the shell command `sleep 25` and then reply with exactly DONE {done}.", enter=True
-        )
-        time.sleep(8)
-        return self.turn_open()
+        prompt = f"Run the shell command `sleep 25` and then reply with exactly DONE {done}."
+        if not submit_until(
+            lambda: self.type(prompt, enter=True),
+            lambda: self.run.tmux.keys("pi-cells", "Enter"),
+            self.turn_open,
+        ):
+            raise NotBusy
+        return True
 
     def send(self, *args: str) -> tuple[int, dict[str, object]]:
         return bellhop(self.env, "send", self.session_id, *args, "--from", "smoke")

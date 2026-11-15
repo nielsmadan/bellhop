@@ -73,6 +73,7 @@ max-args = 6
 "src/bellhop/testing/*.py" = ["S108", "RUF001"]
 "src/bellhop/store.py" = ["S608"]
 "src/bellhop/runtime.py" = ["S108"]
+"src/bellhop/cli/__init__.py" = ["PLC0415"]
 
 [tool.pylint."messages control"]
 disable = ["all"]

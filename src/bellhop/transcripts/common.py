@@ -3,8 +3,16 @@ from collections import OrderedDict
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
+from bellhop.models import Session
+
 TEXT_BLOCKS = ("text", "input_text", "output_text")
 CURSOR_LIMIT = 1024
+
+type Reported = Callable[[Session], Path | None]
+
+
+def nothing_reported(session: Session) -> Path | None:
+    return None
 
 
 def complete_lines(path: Path, start: int) -> tuple[list[bytes], int]:
@@ -67,7 +75,9 @@ class Cursors:
             lines, end = complete_lines(path, start)
         except OSError:
             return False
-        if any(delivered(record, prefix) for record in parse_records(lines)):
+        wanted = prefix.encode()
+        candidates = [line for line in lines if wanted in line]
+        if any(delivered(record, prefix) for record in parse_records(candidates)):
             return True
         self._at[key] = end
         while len(self._at) > CURSOR_LIMIT:

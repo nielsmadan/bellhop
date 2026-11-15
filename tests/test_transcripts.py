@@ -1,6 +1,9 @@
 from pathlib import Path
 
 from bellhop.transcripts import PlainTranscripts, ReaderSetup, reader_finder
+from bellhop.transcripts.claude import ClaudeTranscripts
+from bellhop.transcripts.codex import CodexTranscripts
+from bellhop.transcripts.pi import PiTranscripts
 from conftest import make_session
 
 
@@ -25,10 +28,15 @@ def test_a_missing_transcript_has_no_size_and_contains_nothing(tmp_path: Path) -
     assert (reader.size(session), reader.contains(session, "x", since=0)) == (None, False)
 
 
-def test_the_plain_reader_is_used_only_with_fake_routes_and_claude_has_none_yet() -> None:
+def test_each_harness_has_its_reader_and_fake_routes_use_the_plain_one() -> None:
     session = make_session("s1")
+    find = reader_finder(ReaderSetup(Path("/pi"), fake=False))
 
-    assert reader_finder(ReaderSetup(Path("/pi"), fake=False))(session, None) is None
+    assert [type(find(make_session("s", harness=h), None)) for h in ("claude", "codex", "pi")] == [
+        ClaudeTranscripts,
+        CodexTranscripts,
+        PiTranscripts,
+    ]
     assert isinstance(
         reader_finder(ReaderSetup(Path("/pi"), fake=True))(session, None), PlainTranscripts
     )

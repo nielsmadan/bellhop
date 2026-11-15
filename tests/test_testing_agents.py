@@ -58,14 +58,14 @@ def test_claude_home_trusts_the_work_dirs_and_keeps_installed_hooks(tmp_path: Pa
     settings.write_text(json.dumps({"hooks": {"Stop": []}}))
     work = make_work(layout, "w1")
 
-    write_claude_home(layout, [work], "2.1.325", tmp_path / "user")
+    write_claude_home(layout, [work], "2.1.325", tmp_path / "user", ("cat gate-idle.fifo",))
 
     config = json.loads((layout.claude_dir / ".claude.json").read_text())
     assert config["projects"][str(work.resolve())]["hasTrustDialogAccepted"] is True
     assert config["lastReleaseNotesSeen"] == "2.1.325"
     written = json.loads(settings.read_text())
     assert written["hooks"] == {"Stop": []}
-    assert written["permissions"] == {"allow": ["Bash(sleep:*)"]}
+    assert written["permissions"] == {"allow": ["Bash(cat gate-idle.fifo)"]}
     assert str(tmp_path / "user" / "CLAUDE.md") in written["claudeMdExcludes"]
 
 
@@ -83,27 +83,20 @@ def test_codex_home_links_auth_and_disables_shell_snapshots(tmp_path: Path) -> N
     assert (layout.codex_dir / "auth.json").readlink() == auth
 
 
-@pytest.mark.parametrize(
-    ("features", "written"),
-    [
-        (("shell_snapshot",), "[features]\nshell_snapshot = true\n\n"),
-        (("x_y", "x_y"), "[features]\nshell_snapshot = false\nx_y = true\n\n"),
-    ],
-    ids=["overrides a default", "named twice"],
-)
-def test_codex_features_are_written_once_each(
-    tmp_path: Path, features: tuple[str, ...], written: str
-) -> None:
+def test_a_codex_feature_named_twice_is_written_once(tmp_path: Path) -> None:
     layout = _layout(tmp_path)
     auth = tmp_path / "auth.json"
     auth.write_text("{}")
 
-    write_codex_home(layout, [], auth, features)
+    write_codex_home(layout, [], auth, ("x_y", "x_y"))
 
-    assert written in (layout.codex_dir / "config.toml").read_text()
+    assert (
+        "[features]\nshell_snapshot = false\nx_y = true\n\n"
+        in (layout.codex_dir / "config.toml").read_text()
+    )
 
 
-def test_codex_feature_names_cannot_add_config(tmp_path: Path) -> None:
+def test_codex_features_can_neither_add_config_nor_turn_on_shell_snapshots(tmp_path: Path) -> None:
     auth = tmp_path / "auth.json"
     auth.write_text("{}")
 
@@ -111,6 +104,8 @@ def test_codex_feature_names_cannot_add_config(tmp_path: Path) -> None:
         write_codex_home(
             _layout(tmp_path), [], auth, ('x = true\n[mcp_servers.x]\ncommand = "sh"',)
         )
+    with pytest.raises(AgentSetupError, match="pinned off for the smoke run: shell_snapshot"):
+        write_codex_home(_layout(tmp_path), [], auth, ("shell_snapshot",))
 
 
 def test_codex_home_refuses_without_the_user_auth_file(tmp_path: Path) -> None:

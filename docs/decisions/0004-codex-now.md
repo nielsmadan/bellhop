@@ -47,3 +47,11 @@ either way: by `turn/steer` if the turn goes on, by `turn/start` once the thread
 - The S3b result depends on `request_user_input` keeping its dialog open while a steer is queued;
   a later Codex that changes that needs the measurement again (`tests/smoke/test_codex.py`, cell
   `s3b`).
+- bellhop reads the thread's state and then pushes on the same connection, one round trip later.
+  Two things can happen in that gap, and neither is closed:
+  - (a) A dialog opens between the read and a `turn/steer`. The steer is queued behind it, and if
+    the user escapes the dialog Codex drops it: the message stays `sent` and is never confirmed.
+  - (b) The user starts a turn between an idle read and `turn/start`. Codex 0.167.1 accepts that
+    `turn/start` and answers with the running turn's id (measured in Task B-5f on an isolated
+    daemon): the text joins the running turn as a steer would, so an `idle` message can land
+    mid-turn. There is no refusal to map to `busy`.

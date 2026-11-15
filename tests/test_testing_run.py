@@ -2,6 +2,7 @@ import hashlib
 import os
 import signal
 import subprocess
+import sys
 import time
 from collections.abc import Iterator
 from dataclasses import replace
@@ -9,7 +10,10 @@ from pathlib import Path
 
 import pytest
 
+from bellhop.drain import LOCK_NAME, drainer_argv
 from bellhop.testing.run import (
+    DRAIN_COMMAND,
+    DRAIN_LOCK,
     SMOKE_SOCKET,
     Proc,
     SmokeError,
@@ -561,3 +565,71 @@ def test_the_sweep_does_not_stop_a_daemon_whose_pid_file_is_a_link(tmp_path: Pat
     assert notes == [
         f"skipped the codex cleanup of {earlier.run_id}: {link} is or lies under a symlink"
     ]
+
+
+def test_teardown_never_removes_sockets_through_a_linked_control_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    outside = tmp_path / "user" / ".codex" / "app-server-control"
+    outside.mkdir(parents=True)
+    run = fake_run(tmp_path, run_id="20261113-000000-cccc")
+    scanned: list[Path] = []
+    monkeypatch.setattr("bellhop.testing.run.remove_codex_sockets", scanned.append)
+
+    with run:
+        run.layout.codex_dir.mkdir(parents=True, exist_ok=True)
+        (run.layout.codex_dir / "app-server-control").symlink_to(outside)
+
+    assert run.layout.runtime_dir in scanned
+    assert outside not in {path.resolve() for path in scanned}
+
+
+FAKE_DRAINER = """
+import fcntl, os, sys, time
+lock = open(sys.argv[1], "a+")
+fcntl.flock(lock, fcntl.LOCK_EX)
+lock.seek(0); lock.truncate(); lock.write(str(os.getpid())); lock.flush()
+time.sleep(60)
+"""
+
+
+def start_fake_drainer(lock: Path, *, holds: bool = True) -> subprocess.Popen[bytes]:
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    code = FAKE_DRAINER if holds else "import time; time.sleep(60)"
+    process = subprocess.Popen([sys.executable, "-c", code, str(lock), "bellhop", "_drain"])
+    if not holds:
+        lock.write_text(str(process.pid))
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and not (lock.exists() and lock.read_text().strip()):
+        time.sleep(0.05)
+    time.sleep(0.2)
+    return process
+
+
+def test_teardown_stops_the_drainer_that_holds_the_runs_own_lock(tmp_path: Path) -> None:
+    run = fake_run(tmp_path, run_id="20261113-000000-dddd")
+    with run:
+        lock = Path(run.env["XDG_STATE_HOME"]) / "bellhop" / "drain.lock"
+        drainer = start_fake_drainer(lock)
+
+    assert drainer.wait(5) == -signal.SIGTERM
+    assert run.leftovers == []
+
+
+def test_a_process_that_does_not_hold_the_lock_is_never_stopped(tmp_path: Path) -> None:
+    run = fake_run(tmp_path, run_id="20261113-000000-eeee")
+    with run:
+        lock = Path(run.env["XDG_STATE_HOME"]) / "bellhop" / "drain.lock"
+        bystander = start_fake_drainer(lock, holds=False)
+    try:
+        alive = bystander.poll() is None
+    finally:
+        bystander.kill()
+        bystander.wait(5)
+
+    assert alive is True
+
+
+def test_the_helpers_drain_lock_and_command_match_the_drainers() -> None:
+    assert Path("bellhop") / LOCK_NAME == DRAIN_LOCK
+    assert DRAIN_COMMAND in " ".join(drainer_argv("python"))

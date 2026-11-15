@@ -8,18 +8,20 @@ import pytest
 from smoke_helpers import (
     CONFIRM,
     Cell,
+    NotBusy,
     bellhop,
     harness_rows,
     jsonl_records,
+    measured_reps,
     message,
     run_named,
     smoke_run,
-    stop_drainer,
+    submit_until,
     token,
     wait_for,
 )
 
-from bellhop.testing.run import SmokeRun
+from bellhop.testing.run import SmokeRun, stop_drainer
 
 pytestmark = pytest.mark.smoke
 
@@ -32,7 +34,6 @@ QUESTION = re.compile(
 )
 TASK_EVENTS = {"task_started": True, "task_complete": False, "turn_aborted": False}
 QUESTION_FEATURE = "default_mode_request_user_input"
-S3B_REPS = 3
 AGENT = "cx"
 
 
@@ -100,11 +101,14 @@ class CodexCells:
         return bool(wait_for(lambda: not self.turn_open(), 240, 1.0))
 
     def busy_with(self, done: str) -> bool:
-        self.type(
-            f"Run the shell command `sleep 25` and then reply with exactly DONE {done}.", enter=True
-        )
-        time.sleep(10)
-        return self.turn_open()
+        prompt = f"Run the shell command `sleep 25` and then reply with exactly DONE {done}."
+        if not submit_until(
+            lambda: self.type(prompt, enter=True),
+            lambda: self.run.tmux.keys(NAME, "Enter"),
+            self.turn_open,
+        ):
+            raise NotBusy
+        return True
 
     def send(self, *args: str) -> tuple[int, dict[str, object]]:
         return bellhop(self.env, "send", self.thread, *args, "--from", "smoke")
@@ -257,6 +261,22 @@ class CodexCells:
     def s3_now(self) -> dict[str, object]:
         return self.s3("--urgency", "now")
 
+    def turns_started(self) -> int:
+        return sum(
+            1
+            for _, _, r in self.records()
+            if r.get("type") == "event_msg" and payload(r).get("type") == "task_started"
+        )
+
+    def submit_until_turn(self, prompt: str) -> bool:
+        before = self.turns_started()
+        return submit_until(
+            lambda: self.type(prompt, enter=True),
+            lambda: self.run.tmux.keys(NAME, "Enter"),
+            lambda: self.turns_started() > before,
+            tries=12,
+        )
+
     def binding_state(self) -> object:
         _, listed = bellhop(self.env, "agents")
         rows = listed.get("agents")
@@ -269,7 +289,7 @@ class CodexCells:
         bound, _ = bellhop({**self.env, "CODEX_THREAD_ID": self.thread}, "bind", AGENT)
         restarted = self.run.codex("app-server", "daemon", "restart", check=False).returncode
         dropped = wait_for(lambda: self.binding_state() == "failed", 60)
-        self.type("Reply with the single word AGAIN.", enter=True)
+        self.submit_until_turn("Reply with the single word AGAIN.")
         revived = wait_for(lambda: self.binding_state() == "live", 120)
         self.idle()
         tok = token()
@@ -347,10 +367,7 @@ class CodexCells:
         }
 
     def s3b(self) -> dict[str, object]:
-        reps = [self.s3b_rep() for _ in range(S3B_REPS)]
-        measured = [rep for rep in reps if rep.get("measured")]
-        safe = bool(measured) and all(rep.get("safe") for rep in measured)
-        return {"ok": safe, "measured": len(measured), "reps": reps}
+        return measured_reps(self.s3b_rep)
 
 
 def run_cells(run: SmokeRun, env: Mapping[str, str]) -> dict[str, dict[str, object]]:

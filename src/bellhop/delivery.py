@@ -68,8 +68,10 @@ def plan_send(urgency: Urgency, route: Route, session: Session, *, older_pending
     return Plan(push=ready, interrupt=mode.interrupt, degraded_from=mode.degraded_from)
 
 
-def drainer_may_push(route: Route, session: Session) -> bool:
-    return session.phase not in BUSY_PHASES and ready_for_idle(route, session)
+def drainer_may_push(route: Route, session: Session, urgency: Urgency) -> bool:
+    if session.phase in BUSY_PHASES:
+        return False
+    return push_mode(urgency, route).interrupt or ready_for_idle(route, session)
 
 
 def push(

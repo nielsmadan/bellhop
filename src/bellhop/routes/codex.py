@@ -1,3 +1,5 @@
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -9,6 +11,7 @@ PROBE_SECONDS = 0.5
 PUSH_SECONDS = 2.0
 CONTROL_SOCKET = Path("app-server-control") / "app-server-control.sock"
 FAILURES = (OSError, RpcError, ValueError)
+MEMO_SECONDS = 1.0
 
 
 def daemon_socket(codex_home: Path | None) -> Path | None:
@@ -21,40 +24,81 @@ def codex_socket(binding: Binding | None, codex_home: Path | None) -> Path | Non
     return daemon_socket(codex_home)
 
 
+@dataclass
+class Probe:
+    at: float
+    names: frozenset[str] | None
+    turns: dict[str, Turn | None] = field(default_factory=dict)
+
+
+def read_turn(client: Client, thread: str) -> Turn | None:
+    try:
+        return client.turn(thread)
+    except FAILURES:
+        return None
+
+
+@dataclass
+class Probes:
+    clock: Callable[[], float] = time.monotonic
+    sockets: dict[Path, Probe] = field(default_factory=dict)
+
+    def fresh(self, socket: Path) -> Probe | None:
+        now = self.clock()
+        self.sockets = {
+            path: probe for path, probe in self.sockets.items() if now - probe.at < MEMO_SECONDS
+        }
+        return self.sockets.get(socket)
+
+    def probe(self, socket: Path, thread: str, known: Probe | None) -> Probe:
+        try:
+            with connect(socket, PROBE_SECONDS) as client:
+                names = known.names if known is not None else frozenset(client.loaded())
+                turn = read_turn(client, thread) if names and thread in names else None
+        except FAILURES:
+            failed = Probe(self.clock(), None)
+            self.sockets[socket] = failed
+            return failed
+        found = known or Probe(self.clock(), names)
+        found.turns[thread] = turn
+        self.sockets[socket] = found
+        return found
+
+    def names(self, socket: Path, thread: str) -> frozenset[str] | None:
+        known = self.fresh(socket)
+        return (known or self.probe(socket, thread, None)).names
+
+    def turn(self, socket: Path, thread: str) -> Turn | None:
+        known = self.fresh(socket)
+        if known is not None and (known.names is None or thread not in known.names):
+            return None
+        if known is not None and thread in known.turns:
+            return known.turns[thread]
+        return self.probe(socket, thread, known).turns.get(thread)
+
+
 @dataclass(frozen=True)
 class CodexRoute:
     socket: Path | None
+    probes: Probes = field(default_factory=Probes, compare=False)
     name: str = field(default=NAME, init=False)
     can_interrupt: bool = field(default=True, init=False)
     queues_until_idle: bool = field(default=False, init=False)
-    probed: dict[str, Turn] = field(default_factory=dict, init=False, compare=False)
 
     def reachable(self, session: Session) -> bool:
         if self.socket is None or not self.socket.exists():
             return False
-        try:
-            with connect(self.socket, PROBE_SECONDS) as client:
-                if session.session_id not in client.loaded():
-                    return False
-                self.probed[session.session_id] = client.turn(session.session_id)
-                return True
-        except FAILURES:
-            return False
+        names = self.probes.names(self.socket, session.session_id)
+        return names is not None and session.session_id in names
 
     def replaced(self, session: Session) -> bool:
         return False
 
     def busy(self, session: Session) -> bool | None:
-        probed = self.probed.pop(session.session_id, None)
-        if probed is not None:
-            return probed.state != "idle"
         if self.socket is None:
             return None
-        try:
-            with connect(self.socket, PROBE_SECONDS) as client:
-                return client.turn(session.session_id).state != "idle"
-        except FAILURES:
-            return None
+        turn = self.probes.turn(self.socket, session.session_id)
+        return turn.state != "idle" if turn is not None else None
 
     def push(self, session: Session, text: str, *, interrupt: bool) -> PushResult:
         if self.socket is None:
@@ -84,6 +128,8 @@ def start(client: Client, thread_id: str, text: str, *, interrupt: bool) -> Push
         return PushResult("busy", "a turn is starting")
     if turn.state == "waiting":
         return PushResult("busy", "a dialog is open in the session")
+    if turn.state == "unavailable":
+        return PushResult("busy", f"the thread's status is {turn.status or 'unknown'}")
     if turn.state == "running" and not interrupt:
         return PushResult("busy", f"turn {turn.id} is running")
     if turn.id is not None:

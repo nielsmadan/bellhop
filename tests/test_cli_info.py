@@ -1,9 +1,12 @@
 import json
+import os
 from pathlib import Path
 
 import pytest
 
 from bellhop.cli import main
+from bellhop.cli.context import Context
+from bellhop.cli.info import probed_rows
 from conftest import ALPHA, BETA, Bell, FakeHls, check_golden, pong_line, pong_server
 from fake_app_server import app_server
 
@@ -197,7 +200,8 @@ def test_sessions_list_every_harness_when_the_runtime_dir_is_unsafe(
         ("c1", False),
     ]
     assert payload["warnings"] == [
-        f"cannot reach pi sessions: runtime directory {runtime} has mode 0755; it must be 0700"
+        f"cannot reach {harness} sessions: runtime directory {runtime} has mode 0755; it must be 0700"
+        for harness in ("pi", "claude")
     ]
 
 
@@ -254,3 +258,32 @@ def test_a_codex_binding_keeps_the_app_server_of_the_session_that_bound(
 
     assert (code, payload["message"]["state"]) == (0, "sent")
     assert server.methods()[-1] == "turn/start"
+
+
+def test_sessions_stop_checking_routes_once_their_budget_is_spent(
+    bell: Bell, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("bellhop.cli.info.PROBE_BUDGET_SECONDS", 0.0)
+
+    code, payload = bell.run("sessions")
+
+    assert code == 0
+    assert {row["reachable"] for row in payload["sessions"]} == {False}
+    assert payload["warnings"] == [
+        "stopped checking routes after 0s; the last 4 sessions show reachable: false unchecked"
+    ]
+
+
+def test_a_route_check_that_ends_past_the_budget_skips_nothing(
+    bell: Bell, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ticks = iter([0.0, 1.0, 2.0, 3.0, 4.0, 9.0])
+    ctx = Context(dict(os.environ))
+
+    try:
+        rows, skipped = probed_rows(ctx.sessions.sessions, ctx, clock=lambda: next(ticks))
+    finally:
+        ctx.conn.close()
+
+    assert skipped == 0
+    assert len(rows) == 4

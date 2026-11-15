@@ -1,5 +1,6 @@
 import sqlite3
 from collections.abc import Iterator
+from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
 
@@ -63,16 +64,17 @@ def test_plan_send_follows_the_delivery_rules(
     assert plan_send(urgency, route, session, older_pending=older) == plan  # type: ignore[arg-type]
 
 
-def test_the_drainer_holds_while_the_session_is_busy() -> None:
+def test_the_drainer_holds_for_busy_phases_and_lets_a_now_reach_an_interrupting_route() -> None:
     queueing = FakeRoute(queues_until_idle=True)
 
-    assert drainer_may_push(queueing, make_session("s", phase="working")) is True
+    busy = FakeRoute(queues_until_idle=False, busy_answer=True)
+
+    assert drainer_may_push(queueing, make_session("s", phase="working"), "idle") is True
     for phase in ("permission", "compacting", "unknown"):
-        assert drainer_may_push(queueing, make_session("s", phase=phase)) is False
-    assert (
-        drainer_may_push(FakeRoute(queues_until_idle=False, busy_answer=True), make_session("s"))
-        is False
-    )
+        assert drainer_may_push(queueing, make_session("s", phase=phase), "now") is False
+    assert drainer_may_push(busy, make_session("s"), "idle") is False
+    assert drainer_may_push(busy, make_session("s"), "now") is True
+    assert drainer_may_push(replace(busy, can_interrupt=False), make_session("s"), "now") is False
 
 
 def test_ids_are_bh_and_twelve_hex() -> None:

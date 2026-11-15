@@ -5,7 +5,8 @@ from pathlib import Path
 import pytest
 
 from bellhop.cli import main
-from bellhop.cli.doctor import EXPORT_AGAIN, remove_if_unchanged, socket_inode
+from bellhop.cli.doctor import NEWER_WIRE, remove_if_unchanged, socket_inode
+from bellhop.routes import ENDPOINTS
 from bellhop.routes.pi import UNLISTED_PI
 from bellhop.store import connect, insert_message
 from conftest import ALPHA, Bell, check_golden, make_message, pong_line, pong_server
@@ -227,14 +228,53 @@ def test_messages_to_an_unbound_agent_are_not_orphaned_work(bell: Bell, runtime:
     )
 
 
-def test_a_pi_extension_on_an_older_wire_is_named_with_the_fix(bell: Bell, runtime: Path) -> None:
+@pytest.mark.parametrize(
+    ("reply", "detail"),
+    [
+        (
+            b"ok pong\n",
+            f"pi-4242.sock speaks bellhop wire 1, this bellhop wire 2; {ENDPOINTS['pi'].old_wire}",
+        ),
+        (
+            pong_line("p1", wire=3),
+            f"pi-4242.sock speaks bellhop wire 3, this bellhop wire 2; {NEWER_WIRE}",
+        ),
+    ],
+    ids=["older", "newer"],
+)
+def test_a_pi_extension_on_another_wire_is_named_with_the_fix(
+    bell: Bell, runtime: Path, reply: bytes, detail: str
+) -> None:
     runtime.mkdir(mode=0o700)
 
-    with pong_server(runtime / "pi-4242.sock", b"ok pong\n"):
+    with pong_server(runtime / "pi-4242.sock", reply):
         code, payload = bell.run("doctor")
 
     assert code == 1
-    assert checks(payload)["pi sessions"] == (
+    assert checks(payload)["pi sessions"] == (False, detail)
+
+
+def test_a_claude_relay_hls_does_not_list_is_named(bell: Bell, runtime: Path) -> None:
+    runtime.mkdir(mode=0o700)
+
+    with pong_server(runtime / "claude-77777.sock", pong_line("c-unlisted")):
+        code, payload = bell.run("doctor")
+
+    assert code == 1
+    assert checks(payload)["claude sessions"] == (
         False,
-        f"pi-4242.sock speaks an older bellhop wire; {EXPORT_AGAIN}",
+        "hooklinesinker does not list the pid behind claude-77777.sock",
+    )
+
+
+def test_a_relay_that_cannot_name_its_session_is_named(bell: Bell, runtime: Path) -> None:
+    runtime.mkdir(mode=0o700)
+
+    with pong_server(runtime / "claude-4242.sock", pong_line(None)):
+        code, payload = bell.run("doctor")
+
+    assert code == 1
+    assert checks(payload)["claude sessions"] == (
+        False,
+        "claude-4242.sock answers but cannot name its session",
     )

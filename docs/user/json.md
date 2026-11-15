@@ -75,12 +75,12 @@ States:
 | `send` | `message` |
 | `status <id>…` | `messages`: the known ids in the order asked; unknown ids go to `warnings` |
 | `inbox` | `messages`: the `hold` items taken (or seen, with `--peek`) |
-| `sessions` | `sessions`: `session_id`, `harness`, `title`, `cwd`, `phase` (`idle`, `working`, `permission`, `compacting`, `unknown`), `observed_at`, `agent` (bound name or null), `reachable`, `route` (or null), `pending` (pending messages for the session and its agent) |
+| `sessions` | `sessions`: `session_id`, `harness`, `title`, `cwd`, `phase` (`idle`, `working`, `permission`, `compacting`, `unknown`), `observed_at`, `agent` (bound name or null), `reachable`, `route` (or null), `pending` (pending messages for the session and its agent). Route checks stop after 5 s in total; the last rows then show `reachable: false` unchecked and a warning says how many |
 | `whoami` | `session`: `session_id`, `harness`, `title`, `agent` |
 | `agents` | `agents`: `agent`, `harness`, `configured`, `binding` (`state` `live`/`failed`, and `starting` once `bellhop launch` exists; `session_id`, `cause`, `detail`) or null; every configured agent and every bound name |
 | `bind <agent>` | `agent`: the same shape as one `agents` entry |
-| `integration show pi` | `integration`: `harness`, `file` (the packaged extension), `install_dir` (where Pi loads extensions), `lines` (the text output) |
-| `integration export pi --to DIR` | `integration`: `harness`, `file` (the absolute path of the copy) |
+| `integration show <claude\|pi>` | `integration`: `harness`, `file` (the packaged Pi extension or Claude MCP config), `install_dir` (where Pi loads extensions; null for claude, which is installed with `claude mcp add`), `lines` (the text output) |
+| `integration export <claude\|pi> --to DIR` | `integration`: `harness`, `file` (the absolute path of the copy) |
 | `doctor` | `checks`: `name`, `ok`, `detail`; `pruned`: `{"messages": n, "sockets": n}` with `--prune`, else null. When a check failed, the same two fields ride on a `doctor_failed` error |
 
 ## Error codes
@@ -98,7 +98,7 @@ Nothing is stored when one of these is returned (except `interrupted` and `inter
 | `no_route` | 4 | the target is live but has no usable route (and no `--or-hold`), or `--wake` was asked for an agent that is not running |
 | `hls_unavailable` | 5 | hooklinesinker is missing, gave no answer within 5 s (a first attempt of up to 4 s and a retry in the rest), failed, or speaks another protocol |
 | `invalid_environment` | 1 | a relative `XDG_*` or `BELLHOP_RUNTIME_DIR` value |
-| `runtime_dir_unsafe` | 1 | the runtime directory is not a directory owned by the caller with mode 0700 (`send` to a Pi session and `doctor`; `sessions`, and `send --or-hold`, report it as a warning and carry on with `reachable: false` or a stored `hold`; a `hold` never checks it), or a socket path is too long |
+| `runtime_dir_unsafe` | 1 | the runtime directory is not a directory owned by the caller with mode 0700 (`send` to a Claude or Pi session and `doctor`; `sessions`, and `send --or-hold`, report it as a warning and carry on with `reachable: false` or a stored `hold`; a `hold` never checks it), or a socket path is too long |
 | `store_error` | 1 | the store cannot be opened, or has a newer schema than this bellhop |
 | `binding_conflict` | 1 | `bind` to a name a live process of another session holds |
 | `doctor_failed` | 1 | `doctor` found a failed check; the error also carries `checks` and `pruned` |

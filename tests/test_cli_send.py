@@ -14,11 +14,12 @@ from typing import Any
 import pytest
 
 from bellhop.cli import main
-from bellhop.routes.pi import PING_SECONDS
-from bellhop.store import connect
+from bellhop.routes.endpoint import PING_SECONDS
+from bellhop.store import Push, claim, connect
 from conftest import (
     ALPHA,
     BETA,
+    NOW,
     Bell,
     FakeHls,
     check_golden,
@@ -445,11 +446,13 @@ def test_binding_an_agent_with_waiting_messages_starts_the_drainer(
 
 def test_a_repeated_key_reports_a_read_or_in_flight_message_as_stored(bell: Bell) -> None:
     _, held = bell.run("send", ALPHA, "h", "--urgency", "hold", "--key", "k-read", "--from", "x")
+    bell.route(ALPHA, outcomes=["busy"])
     _, flying = bell.run("send", ALPHA, "f", "--key", "k-fly", "--from", "x")
     conn = connect(bell.tmp / "state-home" / "bellhop" / "bellhop.sqlite")
     conn.execute("UPDATE messages SET state = 'read' WHERE key = 'k-read'")
-    conn.execute("UPDATE messages SET state = 'sending' WHERE key = 'k-fly'")
+    claimed = claim(conn, str(payload_message(flying)["id"]), Push(ALPHA, "fake"), NOW)
     conn.close()
+    assert claimed is True
 
     _, read = bell.run("send", ALPHA, "h", "--urgency", "hold", "--key", "k-read", "--from", "x")
     _, sending = bell.run("send", ALPHA, "f", "--key", "k-fly", "--from", "x")
@@ -580,3 +583,48 @@ def test_send_to_a_pi_session_its_process_has_left_stores_nothing(
         code = main(["send", "p1", "hello", "--from", "x", "--json"])
 
     assert (code, json.loads(capsys.readouterr().out)["error"]["code"]) == (4, "no_route")
+
+
+@contextlib.contextmanager
+def recording_relay(path: Path, session: str) -> Iterator[list[bytes]]:
+    received: list[bytes] = []
+    server = socket.socket(socket.AF_UNIX)
+    server.bind(str(path))
+    server.listen(4)
+
+    def answer() -> None:
+        with contextlib.suppress(OSError):
+            while True:
+                conn, _ = server.accept()
+                with conn:
+                    data = b""
+                    while chunk := conn.recv(65536):
+                        data += chunk
+                    received.append(data)
+                    reply = pong_line(session) if data.startswith(b"ping") else b"ok later\n"
+                    conn.sendall(reply)
+
+    threading.Thread(target=answer, daemon=True).start()
+    try:
+        yield received
+    finally:
+        server.close()
+
+
+def test_an_idle_send_to_a_working_claude_goes_out_at_once_as_a_boundary_frame(
+    fake_hls: FakeHls,
+    monkeypatch: pytest.MonkeyPatch,
+    short_tmp: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    process = {"pid": 5150, "startedAt": "2026-11-13T09:00:00Z"}
+    fake_hls.respond([FakeHls.record("claude", "c1", process=process, phase="working")])
+    monkeypatch.setenv("BELLHOP_RUNTIME_DIR", str(short_tmp))
+    short_tmp.chmod(0o700)
+
+    with recording_relay(short_tmp / "claude-5150.sock", "c1") as received:
+        code = main(["send", "c1", "hello", "--json"])
+
+    sent = json.loads(capsys.readouterr().out)["message"]
+    assert (code, sent["state"], sent["detail"]) == (0, "sent", "later")
+    assert received[-1].split(b"\n", 1)[0].startswith(b"deliver boundary c1 ")

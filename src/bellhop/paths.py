@@ -28,3 +28,13 @@ def data_home(env: Mapping[str, str]) -> Path:
 
 def state_dir(env: Mapping[str, str]) -> Path:
     return xdg_home(env, "XDG_STATE_HOME", ".local/state") / "bellhop"
+
+
+def configured_dir(env: Mapping[str, str], variable: str, default: str) -> Path | None:
+    value = env.get(variable)
+    if not value:
+        return home(env) / default
+    if value == "~" or value.startswith("~/"):
+        return home(env) / value[2:]
+    path = Path(value)
+    return path if path.is_absolute() else None

@@ -17,9 +17,11 @@ from typing import Any
 
 import pytest
 
+from bellhop import runtime
 from bellhop.cli import main
 from bellhop.identity import Proc
 from bellhop.models import Message, Session
+from bellhop.runtime import ensure_runtime_dir
 from bellhop.store import connect, get_messages
 
 FAKE_HLS = Path(__file__).resolve().parent / "fakes" / "hooklinesinker"
@@ -107,7 +109,7 @@ class FakeHls:
 
 
 @pytest.fixture(autouse=True)
-def isolated_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def isolated_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
@@ -116,16 +118,37 @@ def isolated_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state-home"))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data-home"))
     monkeypatch.delenv("BELLHOP_HOOKLINESINKER", raising=False)
-    monkeypatch.delenv("BELLHOP_RUNTIME_DIR", raising=False)
+    runtime_home = Path(tempfile.mkdtemp(prefix="bh-rt-", dir="/tmp"))
+    monkeypatch.setenv("BELLHOP_RUNTIME_DIR", str(runtime_home / "runtime"))
     monkeypatch.delenv("BELLHOP_FAKE_ROUTES", raising=False)
     monkeypatch.delenv("PI_CODING_AGENT_DIR", raising=False)
     monkeypatch.delenv("CODEX_HOME", raising=False)
     monkeypatch.delenv("PI_CODING_AGENT_SESSION_DIR", raising=False)
-    for name in ("CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "PI_SESSION_ID"):
+    for name in (
+        "CLAUDE_CODE_SESSION_ID",
+        "CLAUDE_CODE_MESSAGING_SOCKET",
+        "CLAUDE_CODE_MESSAGING_TOKEN",
+        "CODEX_THREAD_ID",
+        "PI_SESSION_ID",
+    ):
         monkeypatch.delenv(name, raising=False)
     for name in [name for name in os.environ if name.startswith("FAKE_HLS_")]:
         monkeypatch.delenv(name)
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(runtime, "ensure_runtime_dir", refuse_real_runtime_dir)
+    yield
+    shutil.rmtree(runtime_home, ignore_errors=True)
+
+
+def real_runtime_dirs() -> set[Path]:
+    default = Path(f"/tmp/bellhop-{os.getuid()}")
+    return {default, default.resolve()}
+
+
+def refuse_real_runtime_dir(path: Path, uid: int) -> Path:
+    if path in real_runtime_dirs() or path.resolve() in real_runtime_dirs():
+        pytest.fail(f"a test reached the real runtime dir {path}")
+    return ensure_runtime_dir(path, uid)
 
 
 @pytest.fixture

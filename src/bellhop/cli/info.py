@@ -1,5 +1,6 @@
 import argparse
-from collections.abc import Mapping
+import time
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
 from bellhop.cli.context import Context
@@ -22,11 +23,13 @@ from bellhop.store import pending_count, save_binding_unless
 from bellhop.targets import agent_names, agent_of, binding_for
 from bellhop.wiring import codex_home
 
+PROBE_BUDGET_SECONDS = 5.0
 
-def session_row(session: Session, ctx: Context) -> dict[str, object]:
+
+def session_row(session: Session, ctx: Context, *, probe: bool) -> dict[str, object]:
     agent = agent_of(session, ctx.bindings)
     route = ctx.routes(session, binding_for(session, ctx.bindings))
-    reachable = route is not None and ctx.reachable(route, session)
+    reachable = route is not None and probe and ctx.reachable(route, session)
     pending = pending_count(ctx.conn, "session", session.session_id) + (
         pending_count(ctx.conn, "agent", agent) if agent else 0
     )
@@ -39,10 +42,28 @@ def session_row(session: Session, ctx: Context) -> dict[str, object]:
     )
 
 
+def probed_rows(
+    listed: Sequence[Session], ctx: Context, clock: Callable[[], float] = time.monotonic
+) -> tuple[list[dict[str, object]], int]:
+    deadline = clock() + PROBE_BUDGET_SECONDS
+    rows: list[dict[str, object]] = []
+    skipped = 0
+    for session in listed:
+        probe = clock() < deadline
+        skipped += not probe
+        rows.append(session_row(session, ctx, probe=probe))
+    return rows, skipped
+
+
 def sessions(args: argparse.Namespace, ctx: Context) -> int:
     listed = ctx.sessions.sessions
     if args.json:
-        rows = [session_row(session, ctx) for session in listed]
+        rows, skipped = probed_rows(listed, ctx)
+        if skipped:
+            ctx.warnings.append(
+                f"stopped checking routes after {PROBE_BUDGET_SECONDS:g}s; "
+                f"the last {skipped} sessions show reachable: false unchecked"
+            )
         print_json(ok_payload(ctx.warnings, {"sessions": rows}))
         return 0
     print_warnings(ctx.warnings)

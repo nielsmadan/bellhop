@@ -1,8 +1,13 @@
-from collections.abc import Callable
 from pathlib import Path
 
 from bellhop.models import Session
-from bellhop.transcripts.common import Cursors, content_text, first_record
+from bellhop.transcripts.common import (
+    Cursors,
+    Reported,
+    content_text,
+    first_record,
+    nothing_reported,
+)
 
 
 def session_dir(agent_dir: Path, cwd: Path) -> Path:
@@ -43,13 +48,6 @@ def received_texts(record: dict[str, object]) -> list[str]:
 
 def delivered(record: dict[str, object], prefix: str) -> bool:
     return any(text.lstrip().startswith(prefix) for text in received_texts(record))
-
-
-type Reported = Callable[[Session], Path | None]
-
-
-def nothing_reported(session: Session) -> Path | None:
-    return None
 
 
 class PiTranscripts:

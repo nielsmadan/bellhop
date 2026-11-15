@@ -99,8 +99,9 @@ its own session answers every `deliver` with `error session_mismatch unknown`, a
 no session counts as not reachable. A `deliver` header without a session id or byte count gets
 `error wire_version`. bellhop records the transcript file with the message when it takes the
 offset, and confirms in that file. A session whose `ping` reply lacks `"wire":2`, or names another
-session or none, is not reachable; `doctor` names a socket on an older wire and says to export the
-integration again. Within one command or drainer tick, bellhop asks each socket once a second at
+session or none, is not reachable. `doctor` names a socket on another wire with the fix (Pi:
+export the integration again; Claude: restart that Claude; a newer wire: upgrade bellhop), and a
+listed one that answers but cannot name its session. Within one command or drainer tick, bellhop asks each socket once a second at
 most: reachability, replacement and the transcript path come from the same pong.
 
 The Pi extension replies `ok followUp`, `ok steer`, `busy compacting`, `error empty message`,
@@ -211,7 +212,18 @@ file exists), the extension's report, then the per-cwd directory under `PI_CODIN
   listed yet is `busy` ("a turn is starting"); a thread waiting on an approval or a question
   (`activeFlags`) is `busy` for every push, because Codex drops a steer queued behind a dialog the
   user then escapes (ADR 0004). A refused `turn/steer` (the turn ended in between)
-  is `busy`, so the message is tried again. Replies are capped at 4 MiB.
+  is `busy`, so the message is tried again. Replies are capped at 4 MiB. Only a thread whose
+  status is `idle` takes `turn/start`: `notLoaded` (the server would have to load the thread
+  itself), `systemError`, and any status bellhop does not know or cannot read are `busy`. bellhop
+  never answers a request the server sends it (an approval or a question meant for the TUI); it
+  leaves it unanswered and the connection ends at its deadline.
+- Within one second, Codex routes share one memo per app-server socket (`routes.codex.Probes`):
+  the loaded list is read once per socket, a thread the daemon has not loaded is answered without
+  a probe, and a failed probe answers every thread on that socket, so a daemon that accepts but
+  never answers costs one 0.5 s probe per socket per second. Each loaded thread's turn is read
+  once per second on a connection of its own. `sessions --json` stops checking routes after 5 s in
+  total; the warning says how many of the last rows were not checked and show
+  `reachable: false`.
 - `bind` from a Codex session records `$CODEX_HOME/app-server-control/app-server-control.sock`
   from the binding session's own environment, so a sender with another `CODEX_HOME` still reaches
   that agent; other Codex targets use the sender's `CODEX_HOME` (default `~/.codex`).
@@ -255,7 +267,72 @@ trusted isolated home (the smoke test launches all three this way). Startup dial
 Claude's `--mcp-config` takes a list of values and swallowed a trailing prompt as a second config
 file; end the list (another flag, or `--`) before the prompt.
 
+### Claude relay, as built in Task B6
+
+Measured on an isolated Claude launched through `sops exec-env` (the user's wrapper), with a probe
+relay and then bellhop's own:
+
+- **Socket naming.** The relay's parent is the `claude` process (chain: relay, `claude`, `sops`,
+  `tmux`), and that pid is the one hls records for the session. The relay names its socket after
+  its parent when the parent has `$CLAUDE_CONFIG_DIR/sessions/<pid>.json`. It takes an ancestor
+  further up (up to four levels, one `ps -A` read) only when that ancestor's entry names the
+  session the relay started in (`CLAUDE_CODE_SESSION_ID`), so a Claude started from inside
+  another Claude's shell never claims the outer Claude's socket. It waits up to 10 s for an entry
+  Claude writes late, then uses its parent.
+- **What the relay knows.** `CLAUDE_CODE_SESSION_ID` in the relay's environment stays the id the
+  session started with. The parent's registry entry follows the session: `sessionId` changed on
+  `/clear` (the relay was not restarted) and stayed the same across `/compact`. The relay reads
+  `sessionId` and `cwd` from that entry on every request (never its socket path, token or key
+  files), reports the session and `$CLAUDE_CONFIG_DIR/projects/<cwd with every non-alphanumeric
+  as ->/<session>.jsonl` in its pong, and refuses a `deliver` for another session.
+- **Delivery.** Claude's messaging socket sends no reply to a frame. A boundary frame
+  (`priority: "later"`) is held by Claude until the turn ends; an interrupt (`"next"`) is absorbed
+  mid-turn as a `queued_command` attachment. The route queues until idle (`queues_until_idle`) and
+  cannot tell busy (`busy()` is `None`), so the drainer pushes without waiting and never queues
+  twice.
+- **Dialogs.** With a permission prompt or a question dialog open, both a `later` and a `next`
+  frame were only enqueued (`queue-operation` `enqueue`); neither dialog was answered, and after
+  Escape both were delivered and answered. Claude does not drop them, so the relay sends during a
+  dialog. hls reported `permission` for the open permission prompt but `idle` for the open
+  question dialog.
+- **Lifetime.** Claude ended the probe relay without closing its stdin, which left the socket
+  behind; bellhop's relay also cleans up on SIGTERM, SIGHUP and SIGINT and when its parent pid
+  changes. A relay killed with SIGKILL leaves its socket and lock; `doctor` names the dead socket.
+  A second relay in the same Claude (the server configured twice, or a reconnect while the old
+  one still runs) finds the lock held, says so once on stderr, and takes the socket over when the
+  first one goes.
+- **Relay replies and limits.** `ok later`, `ok next`, `busy claude's messaging socket: <reason>`
+  (Claude's socket refused or the write did not finish within 1 s, so nothing was delivered),
+  and the same `error …` replies as the Pi extension, with `error session_mismatch unknown` when
+  the registry names no session. A request gets 5 s in total and 64 KB; more is dropped with no
+  reply. At most 16 requests are handled at once, and a caller beyond that is closed at once. An
+  `accept` error never stops the relay serving.
+- **Reader path order.** The Claude reader uses hls's `transcriptPath` when it names a file, then
+  the file it found before for that session (while it exists), then the path the relay reports.
+- **Measured in B-6f:** a child of Claude's Bash tool inherits `CLAUDE_CODE_MESSAGING_SOCKET` and
+  `CLAUDE_CODE_MESSAGING_TOKEN`, and the socket is named after the owning Claude's pid; the relay
+  refuses a channel not named after the Claude it chose (ADR 0005). A body of 8000 three-byte
+  characters is delivered and confirmed whole. A relay at its 16-request cap answers
+  `busy relay is at capacity`; a request whose answer could no longer reach the client in time is
+  answered `busy` without forwarding (the relay's budget counts from `accept`, 1.5 s).
+- **Not measured:** `/resume` inside a running session (does the registry follow the resumed
+  session id, and does the transcript stay in the same project directory?). The relay reads the
+  registry on every request, so it follows whatever Claude writes there.
+- **Transcript.** A delivery is a `user` record with `origin.kind: "peer"` whose text is Claude's
+  wrapper line ("Another Claude session sent a message:") followed by the envelope, or a
+  `queued_command` attachment with that origin whose `prompt` is the envelope. The
+  `queue-operation` `enqueue` written while a dialog is open is not a delivery.
+
 ## Known limits found
+
+- **After a Codex TUI quits, its thread stays loaded in the daemon and listed by hls**, and a message
+  to it runs as a turn with no TUI attached; a session target hls has dropped can wait for the
+  24 h expiry while the daemon lives on. Measured in Task B-5f on an isolated daemon (Codex 0.167.1, hls 1.5.1):
+  after a TUI quit, the daemon kept its thread loaded and hls kept listing it (`idle`), so a
+  message to it is delivered into the daemon and runs as a turn with no TUI attached; after a
+  daemon restart, `thread/loaded/list` still listed every thread (the quit one too) while hls
+  listed none until a thread's next turn. Neither answer tells a quit thread from a live one, so
+  bellhop changes nothing here.
 
 - **hls 1.5.1 does not list Pi sessions launched the usual way.** Pi runs as `node` and retitles its
   process `pi`, so hls cannot identify the process, records `process: null`, and `sessions --json`

@@ -2,6 +2,7 @@ import argparse
 import os
 import stat
 import tempfile
+from collections.abc import Callable, Mapping
 from importlib.resources import as_file, files
 from importlib.resources.abc import Traversable
 from pathlib import Path
@@ -14,7 +15,7 @@ from bellhop.jsonout import integration_object, ok_payload
 from bellhop.routes.pi import UNLISTED_PI
 from bellhop.wiring import pi_agent_dir
 
-FILES = {"pi": "bellhop.ts"}
+FILES = {"claude": "bellhop-mcp.json", "pi": "bellhop.ts"}
 SHARED_WRITE = stat.S_IWGRP | stat.S_IWOTH
 
 
@@ -26,12 +27,34 @@ def packaged(harness: str) -> Traversable:
     return files("bellhop") / "_integrations" / harness / name
 
 
-def install_dir(ctx: Context) -> Path:
+def install_dir(harness: str, ctx: Context) -> Path | None:
+    if harness != "pi":
+        return None
     agent_dir = pi_agent_dir(ctx.env)
     return (agent_dir if agent_dir is not None else Path("~/.pi/agent")) / "extensions"
 
 
-def show_lines(source: Path, target: Path) -> list[str]:
+def claude_lines(source: Path, target: Path | None) -> list[str]:
+    return [
+        (
+            "bellhop's Claude relay is an MCP server, `bellhop _relay`. It listens on "
+            "<runtime_dir>/claude-<pid>.sock and delivers through Claude's own messaging socket."
+        ),
+        f"packaged file: {source}",
+        "install for every session: claude mcp add --scope user bellhop -- bellhop _relay",
+        (
+            "or for one run: claude --mcp-config <exported dir>/bellhop-mcp.json -- <prompt> "
+            "(end the --mcp-config list before a prompt)"
+        ),
+        (
+            "bellhop must be on the PATH Claude starts MCP servers with; a running session keeps "
+            "the relay it started with until it is restarted."
+        ),
+        "bellhop never edits Claude's configuration.",
+    ]
+
+
+def pi_lines(source: Path, target: Path | None) -> list[str]:
     return [
         "bellhop's Pi extension listens on <runtime_dir>/pi-<pid>.sock and delivers into the session.",
         f"packaged file: {source}",
@@ -42,11 +65,17 @@ def show_lines(source: Path, target: Path) -> list[str]:
     ]
 
 
+LINES: Mapping[str, Callable[[Path, Path | None], list[str]]] = {
+    "claude": claude_lines,
+    "pi": pi_lines,
+}
+
+
 def show(args: argparse.Namespace, ctx: Context) -> int:
     resource = packaged(args.harness)
-    target = install_dir(ctx)
+    target = install_dir(args.harness, ctx)
     with as_file(resource) as source:
-        lines = show_lines(source, target)
+        lines = LINES[args.harness](source, target)
         if args.json:
             fields = integration_object(args.harness, source, install_dir=target, lines=lines)
             print_json(ok_payload(ctx.warnings, {"integration": fields}))

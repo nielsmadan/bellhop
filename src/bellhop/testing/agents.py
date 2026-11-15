@@ -16,6 +16,7 @@ MODELS: dict[Agent, str] = {
 }
 CODEX_EFFORT = "low"
 CODEX_FEATURE = re.compile(r"[a-z][a-z0-9_]*")
+PINNED_FEATURES = {"shell_snapshot": False}
 PI_THINKING = "off"
 PASSTHROUGH = (
     "PATH",
@@ -174,7 +175,13 @@ def claude_md_excludes(work: Path, user_home: Path) -> list[str]:
     return list(dict.fromkeys(str(d / name) for d in dirs for name in CLAUDE_MD_NAMES))
 
 
-def write_claude_home(layout: Layout, works: Sequence[Path], version: str, user_home: Path) -> None:
+def write_claude_home(
+    layout: Layout,
+    works: Sequence[Path],
+    version: str,
+    user_home: Path,
+    allowed: Sequence[str] = (),
+) -> None:
     config_path = layout.claude_dir / ".claude.json"
     existing = _read_json(config_path)
     known = existing.get("projects")
@@ -208,7 +215,7 @@ def write_claude_home(layout: Layout, works: Sequence[Path], version: str, user_
         | {
             "autoUpdates": False,
             "claudeMdExcludes": excludes,
-            "permissions": {"allow": ["Bash(sleep:*)"]},
+            "permissions": {"allow": [f"Bash({command})" for command in allowed]},
         },
     )
 
@@ -218,10 +225,13 @@ def write_codex_home(
 ) -> None:
     if not user_auth.is_file():
         raise AgentSetupError(f"{user_auth} missing; isolated Codex cannot authenticate")
-    odd = [feature for feature in features if not CODEX_FEATURE.fullmatch(feature)]
+    odd = [f for f in features if not CODEX_FEATURE.fullmatch(f)]
     if odd:
         raise AgentSetupError(f"not a codex feature name: {', '.join(map(repr, odd))}")
-    switches = {"shell_snapshot": False} | dict.fromkeys(features, True)
+    pinned = [f for f in features if f in PINNED_FEATURES]
+    if pinned:
+        raise AgentSetupError(f"pinned off for the smoke run: {', '.join(pinned)}")
+    switches = PINNED_FEATURES | dict.fromkeys(features, True)
     lines = [
         f"model = {json.dumps(MODELS['codex'])}",
         f"model_reasoning_effort = {json.dumps(CODEX_EFFORT)}",

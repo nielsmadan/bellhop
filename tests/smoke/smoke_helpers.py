@@ -1,15 +1,14 @@
 import json
 import os
 import secrets
-import signal
 import subprocess
 import sys
 import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
-from bellhop.drain import lock_path
 from bellhop.testing.run import SmokeRun
+from bellhop.transcripts.common import content_text
 
 REAL_ENV = dict(os.environ)
 REAL_HOME = Path(REAL_ENV.get("HOME", str(Path.home())))
@@ -18,6 +17,13 @@ CACHE = Path(__file__).resolve().parents[2] / ".cache" / "smoke"
 CONFIRM = "120"
 
 type Cell = Callable[[], dict[str, object]]
+
+
+class NotBusy(Exception):
+    def __init__(self) -> None:
+        super().__init__("the busy turn never opened; nothing was sent")
+
+
 type Record = tuple[Path, int, dict[str, object]]
 
 
@@ -54,6 +60,11 @@ def harness_rows(env: Mapping[str, str], root: Path, harness: str) -> list[dict[
     ]
 
 
+def text_of(record: Mapping[str, object]) -> str:
+    message = record.get("message")
+    return content_text(message.get("content")) if isinstance(message, dict) else ""
+
+
 def jsonl_records(root: Path, pattern: str) -> list[Record]:
     found: list[Record] = []
     for path in sorted(root.rglob(pattern)):
@@ -63,6 +74,15 @@ def jsonl_records(root: Path, pattern: str) -> list[Record]:
             except json.JSONDecodeError:
                 continue
     return found
+
+
+def measured_reps(rep: Cell, wanted: int = 3, attempts: int = 5) -> dict[str, object]:
+    reps: list[dict[str, object]] = []
+    while len([r for r in reps if r.get("measured")]) < wanted and len(reps) < attempts:
+        reps.append(rep())
+    measured = [r for r in reps if r.get("measured")]
+    safe = len(measured) == wanted and all(r.get("safe") for r in measured)
+    return {"ok": safe, "measured": len(measured), "reps": reps}
 
 
 def run_named(cells: Mapping[str, Cell]) -> dict[str, dict[str, object]]:
@@ -75,6 +95,20 @@ def run_named(cells: Mapping[str, Cell]) -> dict[str, dict[str, object]]:
     return results
 
 
+def submit_until(
+    type_prompt: Callable[[], None],
+    press_enter: Callable[[], None],
+    opened: Callable[[], object],
+    tries: int = 6,
+) -> bool:
+    type_prompt()
+    for _ in range(tries):
+        if wait_for(opened, 10, 0.5):
+            return True
+        press_enter()
+    return False
+
+
 def wait_for(probe: Callable[[], object], timeout: float, every: float = 2.0) -> object:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -85,25 +119,9 @@ def wait_for(probe: Callable[[], object], timeout: float, every: float = 2.0) ->
     return None
 
 
-def stop_drainer(env: Mapping[str, str]) -> None:
-    lock = lock_path(env)
-    text = lock.read_text().strip() if lock.exists() else ""
-    if not text.isdigit():
-        return
-    pid = int(text)
-    command = subprocess.run(
-        ["ps", "-p", str(pid), "-o", "command="], capture_output=True, text=True, check=False
-    ).stdout
-    if "bellhop _drain" not in command:
-        return
-    os.kill(pid, signal.SIGTERM)
-    gone = wait_for(
-        lambda: subprocess.run(["kill", "-0", str(pid)], check=False).returncode != 0, 10, 0.2
-    )
-    assert gone, f"the drainer {pid} outlived SIGTERM"
-
-
-def smoke_run(codex_features: tuple[str, ...] = ()) -> SmokeRun:
+def smoke_run(
+    codex_features: tuple[str, ...] = (), claude_allowed: tuple[str, ...] = ()
+) -> SmokeRun:
     return SmokeRun(
         CACHE,
         REAL_ENV,
@@ -112,4 +130,5 @@ def smoke_run(codex_features: tuple[str, ...] = ()) -> SmokeRun:
         codex_auth=REAL_HOME / ".codex" / "auth.json",
         user_home=REAL_HOME,
         codex_features=codex_features,
+        claude_allowed=claude_allowed,
     )

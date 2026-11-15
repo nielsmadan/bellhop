@@ -67,3 +67,10 @@ def test_resolve_uses_the_override(tmp_path: Path) -> None:
     env = {"BELLHOP_RUNTIME_DIR": str(tmp_path / "rt")}
 
     assert resolve_runtime_dir(env, CONFIG) == tmp_path / "rt"
+
+
+def test_a_test_that_reaches_the_real_runtime_dir_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("BELLHOP_RUNTIME_DIR")
+
+    with pytest.raises(pytest.fail.Exception, match="reached the real runtime dir"):
+        resolve_runtime_dir(os.environ, CONFIG)

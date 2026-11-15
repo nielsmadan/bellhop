@@ -17,14 +17,17 @@ def prefix(message_id: str) -> str:
 
 @pytest.fixture
 def home(tmp_path: Path) -> Path:
-    day = tmp_path / ".codex" / "sessions" / "2026" / "11" / "14"
-    day.mkdir(parents=True)
+    sessions = tmp_path / ".codex" / "sessions"
+    mixed_day = sessions / "2026" / "11" / "12"
+    probe_day = sessions / "2026" / "10" / "24"
+    for day in (mixed_day, probe_day):
+        day.mkdir(parents=True)
     shutil.copy(
-        FIXTURES / "bellhop-mixed.jsonl", day / f"rollout-2026-11-14T09-00-00-{MIXED}.jsonl"
+        FIXTURES / "bellhop-mixed.jsonl", mixed_day / f"rollout-2026-11-12T09-00-00-{MIXED}.jsonl"
     )
     shutil.copy(
         FIXTURES / "s1-probe.jsonl",
-        day / "rollout-2026-10-24T12-11-48-01a16dd2-da5b-7970-bab3-f3983307a86e.jsonl",
+        probe_day / "rollout-2026-10-24T12-11-48-01a16dd2-da5b-7970-bab3-f3983307a86e.jsonl",
     )
     return tmp_path / ".codex"
 
@@ -56,7 +59,7 @@ def test_a_delivery_before_the_offset_does_not_count(home: Path) -> None:
 
 
 def test_a_rollout_of_another_thread_never_confirms(home: Path) -> None:
-    other = home / "sessions" / "2026" / "11" / "14" / f"rollout-2026-11-14T09-00-00-{MIXED}.jsonl"
+    other = home / "sessions" / "2026" / "11" / "12" / f"rollout-2026-11-12T09-00-00-{MIXED}.jsonl"
     session = make_session("someone-else", harness="codex", transcript_path=None)
 
     assert (
@@ -96,7 +99,7 @@ def test_a_thread_id_names_the_day_its_rollout_was_created() -> None:
     assert len(days) == 3
 
 
-def test_the_rollout_is_looked_up_in_its_creation_day_before_the_whole_tree(
+def test_the_rollout_is_found_in_its_creation_day(
     tmp_path: Path,
 ) -> None:
     thread = "01a1d994-2578-7000-8000-000000000000"
@@ -109,15 +112,24 @@ def test_the_rollout_is_looked_up_in_its_creation_day_before_the_whole_tree(
     assert rollout(tmp_path, thread, UTC) == dated
 
 
-def test_a_thread_id_is_matched_literally_and_never_as_a_pattern(tmp_path: Path) -> None:
+def test_a_thread_id_that_names_no_creation_day_finds_nothing(tmp_path: Path) -> None:
     day = tmp_path / "2026" / "11" / "14"
     day.mkdir(parents=True)
     (day / "rollout-x-aaaa.jsonl").write_text("{}\n")
     (day / "rollout-x-[ab]*.jsonl").write_text("{}\n")
 
-    assert rollout(tmp_path, "[ab]*") == day / "rollout-x-[ab]*.jsonl"
+    assert rollout(tmp_path, "[ab]*") is None
     assert rollout(tmp_path, "*") is None
     assert rollout(tmp_path, "../x") is None
+
+
+def test_a_rollout_outside_its_creation_days_is_not_searched_for(tmp_path: Path) -> None:
+    thread = "01a1d994-2578-7000-8000-000000000000"
+    far = tmp_path / "2027" / "01" / "01" / f"rollout-2027-01-01T10-00-00-{thread}.jsonl"
+    far.parent.mkdir(parents=True)
+    far.write_text("{}\n")
+
+    assert rollout(tmp_path, thread, UTC) is None
 
 
 def test_a_cached_rollout_that_disappears_is_looked_up_again(home: Path) -> None:
@@ -125,7 +137,7 @@ def test_a_cached_rollout_that_disappears_is_looked_up_again(home: Path) -> None
     reader = CodexTranscripts(home)
     first = reader.path(session)
     assert first is not None
-    moved = home / "sessions" / "2026" / "11" / "15" / first.name
+    moved = home / "sessions" / "2026" / "11" / "13" / first.name
     moved.parent.mkdir(parents=True)
     first.rename(moved)
 

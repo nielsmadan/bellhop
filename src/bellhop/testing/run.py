@@ -1,3 +1,4 @@
+import contextlib
 import fcntl
 import hashlib
 import os
@@ -108,6 +109,7 @@ class SmokeRun:
     codex_auth: Path | None = None
     user_home: Path | None = None
     codex_features: tuple[str, ...] = ()
+    claude_allowed: tuple[str, ...] = ()
     run_id: str = field(default_factory=new_run_id)
     base: Path = BASE
     launched: dict[str, Launched] = field(default_factory=dict)
@@ -227,7 +229,11 @@ class SmokeRun:
         match agent:
             case "claude":
                 write_claude_home(
-                    self.layout, works, self.binary("claude").version, self.paths.user_home
+                    self.layout,
+                    works,
+                    self.binary("claude").version,
+                    self.paths.user_home,
+                    self.claude_allowed,
                 )
             case "codex":
                 write_codex_home(self.layout, works, self.paths.codex_auth, self.codex_features)
@@ -356,6 +362,7 @@ class SmokeRun:
         if self._socket_lock is None:
             return []
         problems: list[str] = []
+        drainer = _attempt("stop drainer", self.stop_drainer, problems)
         steps: list[tuple[str, Callable[[], object]]] = [
             ("track", self.track if self.launched else lambda: None),
             ("tmux kill-server", self.tmux.kill_server),
@@ -364,13 +371,20 @@ class SmokeRun:
         ]
         for label, step in steps:
             _attempt(label, step, problems)
-        leftovers = _attempt_list("stop processes", self._stop_survivors, problems)
+        leftovers = [drainer] if isinstance(drainer, str) else []
+        leftovers += _attempt_list("stop processes", self._stop_survivors, problems)
         if _attempt_bool("tmux server check", self.tmux.server_alive, problems):
             leftovers.append(f"tmux server -L {self.socket}")
         _attempt("codex sockets", self._remove_codex_sockets, problems)
         leftovers += _attempt_list("runtime dir", self._remove_runtime_dir, problems)
         self._release()
         return leftovers + problems
+
+    def stop_drainer(self) -> str | None:
+        state_home = Path(self.env["XDG_STATE_HOME"])
+        if not state_home.resolve().is_relative_to(self.layout.root.resolve()):
+            return f"skipped the drainer stop: {state_home} is outside the run"
+        return stop_drainer(self.env)
 
     def _stop_daemon(self) -> None:
         if (self.layout.codex_dir / "app-server-daemon").exists():
@@ -380,12 +394,11 @@ class SmokeRun:
         return terminate(self.survivors, EXIT_GRACE_SECONDS)
 
     def _remove_codex_sockets(self) -> None:
-        for directory in (
-            self.layout.runtime_dir,
-            self.layout.codex_dir / "app-server-daemon",
-            self.layout.codex_dir / "app-server-control",
-        ):
-            remove_codex_sockets(directory)
+        home, codex = self.layout.home, self.layout.codex_dir
+        remove_codex_sockets(self.layout.runtime_dir)
+        for directory in (codex / "app-server-daemon", codex / "app-server-control"):
+            if not _interior_links(self.layout.root, [home, codex, directory]):
+                remove_codex_sockets(directory)
 
     def _remove_runtime_dir(self) -> list[str]:
         runtime = self.layout.runtime_dir
@@ -581,6 +594,52 @@ def remove_codex_sockets(directory: Path, shared: Path | None = None) -> None:
 def parse_ps(text: str) -> list[Proc]:
     rows = [(*line.split(None, 7), "")[:8] for line in text.splitlines() if line.strip()]
     return [Proc(int(row[0]), int(row[1]), row[7], " ".join(row[2:7])) for row in rows]
+
+
+DRAIN_LOCK = Path("bellhop") / "drain.lock"
+DRAIN_COMMAND = "bellhop _drain"
+DRAIN_STOP_SECONDS = 10.0
+
+
+def lock_held(path: Path) -> bool:
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        return False
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    finally:
+        os.close(descriptor)
+    return False
+
+
+def owned_drainer(state_home: Path, procs: Sequence[Proc]) -> Proc | None:
+    lock = state_home / DRAIN_LOCK
+    try:
+        text = lock.read_text().strip() if not lock.is_symlink() else ""
+    except OSError:
+        return None
+    proc = next((p for p in procs if text.isdigit() and p.pid == int(text)), None)
+    if proc is None or DRAIN_COMMAND not in proc.command or not lock_held(lock):
+        return None
+    return proc
+
+
+def stop_drainer(env: Mapping[str, str]) -> str | None:
+    state_home = env.get("XDG_STATE_HOME")
+    found = owned_drainer(Path(state_home), ps()) if state_home else None
+    if found is None:
+        return None
+    with contextlib.suppress(ProcessLookupError):
+        os.kill(found.pid, signal.SIGTERM)
+    deadline = time.monotonic() + DRAIN_STOP_SECONDS
+    while time.monotonic() < deadline:
+        if all(proc.identity != found.identity for proc in ps()):
+            return None
+        time.sleep(0.2)
+    return f"drainer {found.pid}"
 
 
 def ps() -> list[Proc]:

@@ -32,7 +32,7 @@ from bellhop.store import (
     sweep_sending,
     update_bindings,
 )
-from bellhop.targets import binding_for, live_session, refresh_bindings
+from bellhop.targets import binding_for, follows_processes, live_session, refresh_bindings
 from bellhop.transcripts import ReaderFinder
 from bellhop.wiring import wire
 
@@ -142,10 +142,7 @@ def absences(
 
 
 def needs_table(current: Sequence[Binding], absent: Mapping[str, int]) -> bool:
-    followed = any(
-        b.state == "live" and (b.pid is not None or b.app_server_pid is not None) for b in current
-    )
-    return followed or any(count >= GONE_POLLS for count in absent.values())
+    return follows_processes(current) or any(count >= GONE_POLLS for count in absent.values())
 
 
 def known_dead(last: Session | None, table: ProcessTable | None) -> bool:
@@ -188,7 +185,9 @@ def _drain_target(deps: Deps, state: State, target: tuple[TargetKind, str], view
     message = oldest_pending(deps.conn, kind, name)
     if session is None or message is None or paced(session, state, view.now):
         return
-    if route is None or not drainer_may_push(route, session) or not route.reachable(session):
+    if route is None or not drainer_may_push(route, session, message.urgency):
+        return
+    if not route.reachable(session):
         return
     channel = Channel(route, deps.readers(session, binding))
     push_waiting(deps.conn, message, session, channel, view.now)

@@ -6,8 +6,8 @@ from pathlib import Path
 from bellhop.models import Binding
 from bellhop.routes import RouteSetup, route_finder
 from bellhop.routes.codex import CodexRoute
+from bellhop.routes.endpoint import EndpointRoute
 from bellhop.routes.fake import FakeRoute
-from bellhop.routes.pi import PiRoute
 from bellhop.transcripts import PlainTranscripts, ReaderSetup, reader_finder
 from conftest import make_session
 
@@ -20,12 +20,22 @@ def unused() -> Path:
     raise AssertionError("the runtime directory is not needed here")
 
 
-def test_the_real_finder_routes_pi_and_codex_and_not_claude_yet(tmp_path: Path) -> None:
-    find = route_finder(RouteSetup(runtime_dir=unused, codex_home=tmp_path / ".codex"))
+def test_the_real_finder_routes_every_harness(tmp_path: Path, short_tmp: Path) -> None:
+    find = route_finder(RouteSetup(runtime_dir=lambda: short_tmp, codex_home=tmp_path / ".codex"))
     bound = replace(BINDING, app_server_socket="/tmp/per-session.sock")
+    pi = find(make_session("p1", harness="pi", pid=11), None)
+    claude = find(make_session("c1", harness="claude", pid=22), None)
 
-    assert isinstance(find(make_session("p1", harness="pi"), None), PiRoute)
-    assert find(make_session("c1", harness="claude"), None) is None
+    assert isinstance(pi, EndpointRoute)
+    assert isinstance(claude, EndpointRoute)
+    assert (pi.name, pi.socket(make_session("p1", harness="pi", pid=11))) == (
+        "pi-extension",
+        short_tmp / "pi-11.sock",
+    )
+    assert (claude.name, claude.socket(make_session("c1", harness="claude", pid=22))) == (
+        "claude-relay",
+        short_tmp / "claude-22.sock",
+    )
     assert find(make_session("x1", harness="codex"), None) == CodexRoute(
         tmp_path / ".codex" / "app-server-control" / "app-server-control.sock"
     )
@@ -56,7 +66,6 @@ def test_the_fake_route_can_be_absent_per_session(tmp_path: Path) -> None:
 
     setup = RouteSetup(runtime_dir=unused, fake_routes=config)
     assert route_finder(setup)(make_session("s1"), None) is None
-    assert route_finder(RouteSetup(runtime_dir=unused))(make_session("s1"), None) is None
 
 
 def test_an_echoing_fake_route_writes_the_transcript_the_plain_reader_reads(tmp_path: Path) -> None:

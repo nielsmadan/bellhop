@@ -677,9 +677,37 @@ def test_a_session_hls_dropped_from_a_live_process_fails_once_replaced(world: Wo
     assert (failed.state, failed.detail) == ("failed", "session replaced in its process")
 
 
+@pytest.mark.parametrize(
+    "route",
+    [
+        FakeRoute(queues_until_idle=False, busy_answer=True),
+        FakeRoute(queues_until_idle=True),
+    ],
+    ids=["codex-like, turn running", "pi-like"],
+)
+def test_a_waiting_now_message_is_pushed_as_an_interrupt(world: World, route: FakeRoute) -> None:
+    world.sessions = [make_session("s1", phase="working")]
+    insert_message(world.conn, make_message(1, urgency="now"))
+    world.route = route
+
+    tick(world.deps, State())
+
+    assert [interrupt for _, _, interrupt in route.pushes] == [True]
+
+
+def test_a_waiting_now_message_still_waits_out_a_permission_prompt(world: World) -> None:
+    world.sessions = [make_session("s1", phase="permission")]
+    stored = insert_message(world.conn, make_message(1, urgency="now"))
+
+    tick(world.deps, State())
+
+    assert get_message(world.conn, stored.id).state == "pending"
+    assert world.route.pushes == []
+
+
 def test_a_message_to_a_stopped_codex_agent_does_not_keep_the_drainer(world: World) -> None:
     stopped = Binding(
-        "nanna", "codex", "live", "gone-thread", None, STARTED, None, 4242, None, "bind", None, NOW
+        "nanna", "codex", "live", "gone-thread", None, None, None, None, None, "bind", None, NOW
     )
     save_binding(world.conn, stopped)
     insert_message(world.conn, make_message(1, target_kind="agent", target="nanna"))

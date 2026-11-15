@@ -84,6 +84,33 @@ def test_show_prints_the_packaged_file_and_where_pi_loads_it(
     check_golden("integration-show", payload, {str(Path(fields["file"])): "<packaged>"})
 
 
+def test_show_claude_prints_the_mcp_server_line_and_names_no_install_dir(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert main(["integration", "show", "claude", "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    fields = payload["integration"]
+    assert fields["install_dir"] is None
+    assert (
+        "install for every session: claude mcp add --scope user bellhop -- bellhop _relay"
+        in fields["lines"]
+    )
+    check_golden("integration-show-claude", payload, {str(Path(fields["file"])): "<packaged>"})
+
+
+def test_export_claude_writes_an_mcp_config_that_starts_the_relay(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    target = tmp_path / "claude"
+
+    assert main(["integration", "export", "claude", "--to", str(target)]) == 0
+
+    config = json.loads((target / "bellhop-mcp.json").read_text())
+    assert config == {"mcpServers": {"bellhop": {"command": "bellhop", "args": ["_relay"]}}}
+    assert capsys.readouterr().out.startswith("exported the claude integration to ")
+
+
 def test_export_copies_the_extension_and_writes_nothing_else(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -146,9 +173,9 @@ def test_integration_needs_an_action(capsys: pytest.CaptureFixture[str]) -> None
 def test_harnesses_without_an_integration_yet_are_usage_errors(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    assert main(["integration", "show", "claude"]) == 2
+    assert main(["integration", "show", "codex"]) == 2
 
-    assert capsys.readouterr().err == "bellhop: no claude integration yet; available: pi\n"
+    assert capsys.readouterr().err == "bellhop: no codex integration yet; available: claude, pi\n"
 
 
 @pytest.mark.skipif(NODE is None, reason="node is not installed")
@@ -265,7 +292,9 @@ def test_the_wheel_carries_the_extension(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     wheel = next(tmp_path.glob("bellhop-*.whl"))
 
-    assert "bellhop/_integrations/pi/bellhop.ts" in zipfile.ZipFile(wheel).namelist()
+    names = zipfile.ZipFile(wheel).namelist()
+    assert "bellhop/_integrations/pi/bellhop.ts" in names
+    assert "bellhop/_integrations/claude/bellhop-mcp.json" in names
 
 
 PARITY = """
@@ -362,13 +391,13 @@ process.exit(0);
 """
 
 
-@pytest.mark.skipif(NODE is None, reason="node is not installed")
 class SmallSendBuffer(socket.socket):
     def __init__(self, family: int = socket.AF_UNIX) -> None:
         super().__init__(family)
         self.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, SEND_BUFFER)
 
 
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
 def test_a_body_cut_short_by_a_stalled_pi_is_never_delivered(
     tmp_path: Path, short_tmp: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

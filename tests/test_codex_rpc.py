@@ -93,16 +93,13 @@ def test_a_socket_link_with_a_long_path_is_followed_to_its_target(
             client.close()
 
 
-def test_the_client_answers_server_requests_and_pings_while_it_waits(short_tmp: Path) -> None:
+def test_the_client_leaves_server_requests_unanswered_and_answers_pings(short_tmp: Path) -> None:
     path = short_tmp / "app.sock"
     with app_server(path, loaded=["t1"], chatter=True) as server, connect(path, 2.0) as client:
         loaded = client.loaded()
 
     assert loaded == ["t1"]
-    assert server.answered[0] == {
-        "id": "srv-1",
-        "error": {"code": -32601, "message": "unsupported"},
-    }
+    assert server.answered == []
     assert server.pongs[0] == b"are you there"
     assert server.unmasked == 0
 

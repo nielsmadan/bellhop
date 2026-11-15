@@ -31,8 +31,9 @@ class Unwritten(ConnectionError):
 
 @dataclass(frozen=True)
 class Turn:
-    state: Literal["idle", "starting", "running", "waiting"]
+    state: Literal["idle", "starting", "running", "waiting", "unavailable"]
     id: str | None = None
+    status: str | None = None
 
 
 IDLE, STARTING = Turn("idle"), Turn("starting")
@@ -118,7 +119,14 @@ def active_turn(turns: Mapping[str, object]) -> Turn:
     data = turns.get("data")
     rows = data if isinstance(data, list) else []
     running = next(
-        (str(t["id"]) for t in rows if isinstance(t, dict) and t.get("status") == "inProgress"),
+        (
+            t["id"]
+            for t in rows
+            if isinstance(t, dict)
+            and t.get("status") == "inProgress"
+            and isinstance(t.get("id"), str)
+            and t["id"]
+        ),
         None,
     )
     return Turn("running", running) if running is not None else STARTING
@@ -127,11 +135,14 @@ def active_turn(turns: Mapping[str, object]) -> Turn:
 def thread_status(read: Mapping[str, object]) -> Turn | None:
     thread = read.get("thread")
     status = thread.get("status") if isinstance(thread, dict) else None
-    if not isinstance(status, dict) or status.get("type") != "active":
+    kind = status.get("type") if isinstance(status, dict) else None
+    if kind == "idle":
         return IDLE
+    if kind != "active" or not isinstance(status, dict):
+        return Turn("unavailable", status=kind if isinstance(kind, str) else None)
     flags = status.get("activeFlags")
-    waiting = WAITING_FLAGS.intersection(flags) if isinstance(flags, list) else set()
-    return Turn("waiting") if waiting else None
+    names = {flag for flag in flags if isinstance(flag, str)} if isinstance(flags, list) else set()
+    return Turn("waiting") if names & WAITING_FLAGS else None
 
 
 @dataclass
@@ -209,9 +220,7 @@ class Client:
             raise Unwritten(reason(error)) from error
         while True:
             reply = self.message()
-            if "method" in reply and "id" in reply:
-                self.send({"id": reply["id"], "error": {"code": -32601, "message": "unsupported"}})
-            elif reply.get("id") == request_id:
+            if "method" not in reply and reply.get("id") == request_id:
                 failure = reply.get("error")
                 if failure is not None:
                     detail = (

@@ -37,6 +37,8 @@ that passes S2 mid-turn, else degrades to `idle`.
   `crossSessionInbound`. It is meant to listen on `<runtime_dir>/claude-<pid>.sock` with `<pid>` the
   Claude process hls reports; the spike used fixed socket names, so that naming, and whether the
   relay's parent is that pid under the user's launch wrapper, is an assumption Task B6 measures.
+  B6 measured it (`docs/reference/routes.md`, "Claude relay, as built in Task B6") and
+  [ADR 0005](0005-claude-relay.md) records what the relay relies on.
 - **Codex.** No candidate failed S3. S3b could not be measured: Codex opened no question dialog
   in its default mode (see Consequences). `turn/start` on the shared daemon, `codex queue` on the
   shared daemon, and `turn/start` on a per-session server each passed S1 and S7 3/3 and failed S10

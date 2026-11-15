@@ -6,7 +6,8 @@ from pathlib import Path
 import pytest
 
 from bellhop.models import PushResult
-from bellhop.routes.pi import PONG_SECONDS, PiRoute, Pongs
+from bellhop.routes.endpoint import PONG_SECONDS, EndpointRoute, Pongs
+from bellhop.routes.pi import NAME
 from conftest import make_session, pong_line
 
 type Handler = Callable[[socket.socket], bytes]
@@ -17,6 +18,10 @@ def runtime(short_tmp: Path) -> Path:
     path = short_tmp / "rt"
     path.mkdir(mode=0o700)
     return path
+
+
+def pi_route(runtime: Path, pongs: Pongs | None = None) -> EndpointRoute:
+    return EndpointRoute("pi", NAME, lambda: runtime, pongs or Pongs())
 
 
 def serve(path: Path, handler: Handler, received: list[bytes]) -> socket.socket:
@@ -50,7 +55,7 @@ def test_a_pi_session_is_reached_at_its_pid_socket_and_ping_delivers_nothing(
 ) -> None:
     received: list[bytes] = []
     server = serve(runtime / "pi-4242.sock", pong("p1"), received)
-    route = PiRoute(lambda: runtime)
+    route = pi_route(runtime)
     try:
         assert route.reachable(make_session("p1", harness="pi", pid=4242)) is True
         assert route.reachable(make_session("p2", harness="pi", pid=5151)) is False
@@ -70,7 +75,7 @@ def test_boundary_and_interrupt_map_to_their_headers(
     received: list[bytes] = []
     server = serve(runtime / "pi-4242.sock", lambda conn: b"ok followUp\n", received)
     try:
-        result = PiRoute(lambda: runtime).push(
+        result = pi_route(runtime).push(
             make_session("p1", harness="pi", pid=4242),
             "[bellhop bh_1 from x] hi",
             interrupt=interrupt,
@@ -84,7 +89,7 @@ def test_boundary_and_interrupt_map_to_their_headers(
 
 def test_a_session_without_a_pid_has_no_socket(runtime: Path) -> None:
     session = make_session("p1", harness="pi", pid=None)
-    route = PiRoute(lambda: runtime)
+    route = pi_route(runtime)
 
     assert route.reachable(session) is False
     assert route.push(session, "x", interrupt=False).outcome == "busy"
@@ -106,10 +111,7 @@ def test_a_pi_socket_serves_only_its_current_session_on_wire_2(
 ) -> None:
     server = serve(runtime / "pi-4242.sock", handler, [])
     try:
-        assert (
-            PiRoute(lambda: runtime).reachable(make_session("p1", harness="pi", pid=4242))
-            is reachable
-        )
+        assert pi_route(runtime).reachable(make_session("p1", harness="pi", pid=4242)) is reachable
     finally:
         server.close()
 
@@ -130,7 +132,7 @@ def test_a_session_is_replaced_only_when_the_extension_names_another(
 ) -> None:
     server = serve(runtime / "pi-4242.sock", handler, [])
     try:
-        found = PiRoute(lambda: runtime).replaced(make_session("p1", harness="pi", pid=4242))
+        found = pi_route(runtime).replaced(make_session("p1", harness="pi", pid=4242))
     finally:
         server.close()
 
@@ -141,7 +143,7 @@ def test_one_pong_answers_every_question_asked_within_a_second(runtime: Path) ->
     received: list[bytes] = []
     clock = [100.0]
     server = serve(runtime / "pi-4242.sock", pong("p-new"), received)
-    route = PiRoute(lambda: runtime, Pongs(clock=lambda: clock[0]))
+    route = pi_route(runtime, Pongs(clock=lambda: clock[0]))
     session = make_session("p1", harness="pi", pid=4242)
     try:
         first = (route.reachable(session), route.replaced(session), route.transcript(session))
@@ -156,7 +158,7 @@ def test_one_pong_answers_every_question_asked_within_a_second(runtime: Path) ->
 
 def test_the_route_reports_the_transcript_the_extension_names(runtime: Path) -> None:
     server = serve(runtime / "pi-4242.sock", pong("p1"), [])
-    route = PiRoute(lambda: runtime)
+    route = pi_route(runtime)
     try:
         here = route.transcript(make_session("p1", harness="pi", pid=4242))
         elsewhere = route.transcript(make_session("p9", harness="pi", pid=4242))
@@ -169,7 +171,7 @@ def test_the_route_reports_the_transcript_the_extension_names(runtime: Path) -> 
 def test_a_mismatch_reply_leaves_the_message_waiting(runtime: Path) -> None:
     server = serve(runtime / "pi-4242.sock", lambda conn: b"error session_mismatch p2\n", [])
     try:
-        result = PiRoute(lambda: runtime).push(
+        result = pi_route(runtime).push(
             make_session("p1", harness="pi", pid=4242), "x", interrupt=False
         )
     finally:

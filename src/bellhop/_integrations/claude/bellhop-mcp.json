@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "bellhop": {
+      "command": "bellhop",
+      "args": ["_relay"]
+    }
+  }
+}

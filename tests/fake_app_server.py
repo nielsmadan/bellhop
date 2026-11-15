@@ -30,8 +30,11 @@ class FakeAppServer:
     loaded: list[str] = field(default_factory=list)
     running_turn: str | None = None
     start_reply: StartReply = "ok"
+    steer_reply: StartReply = "ok"
     turns_listed: bool = True
     waiting: str | None = None
+    raw_status: object = None
+    raw_turns: object = None
     read_error: str | None = None
     steer_error: str | None = None
     chatter: bool = False
@@ -51,6 +54,8 @@ class FakeAppServer:
             return {"error": {"code": -32600, "message": self.read_error}}
         if method == "turn/steer" and self.steer_error is not None:
             return {"error": {"code": -32600, "message": self.steer_error}}
+        if method == "turn/steer" and self.steer_reply in ("drop", "silent"):
+            return None
         answers: dict[str, dict[str, object]] = {
             "initialize": {"result": {"userAgent": "fake"}},
             "thread/loaded/list": {"result": {"data": list(self.loaded)}},
@@ -63,7 +68,9 @@ class FakeAppServer:
         }
         return answers.get(method, unsupported)
 
-    def thread_status(self) -> dict[str, object]:
+    def thread_status(self) -> object:
+        if self.raw_status is not None:
+            return self.raw_status
         flags = [self.waiting] if self.waiting else []
         return (
             {"type": self.status(), "activeFlags": flags} if self.running_turn else {"type": "idle"}
@@ -72,7 +79,9 @@ class FakeAppServer:
     def status(self) -> str:
         return "active" if self.running_turn else "idle"
 
-    def turns(self) -> list[dict[str, object]]:
+    def turns(self) -> object:
+        if self.raw_turns is not None:
+            return self.raw_turns
         listed = self.running_turn and self.turns_listed
         return [{"id": self.running_turn, "status": "inProgress"}] if listed else []
 
@@ -128,7 +137,7 @@ class FakeAppServer:
             return True
         answer = self.reply(method, params)
         if answer is None:
-            if self.start_reply == "drop":
+            if "drop" in (self.start_reply, self.steer_reply):
                 return False
             self.held.append(conn)
             return True

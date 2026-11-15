@@ -156,6 +156,10 @@ def _follow(
     return replace(binding, session_id=current.session_id, updated_at=now)
 
 
+def follows_processes(bindings: Sequence[Binding]) -> bool:
+    return any(b.state == "live" and (b.pid is not None or b.harness == "codex") for b in bindings)
+
+
 def refresh_bindings(
     bindings: Sequence[Binding],
     sessions: Sequence[Session],

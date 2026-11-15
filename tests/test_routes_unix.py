@@ -4,6 +4,7 @@ import threading
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -234,3 +235,33 @@ def test_endpoint_paths_name_harness_and_pid_and_respect_the_socket_limit() -> N
     with pytest.raises(BellhopError) as caught:
         endpoint_path(Path("/" + "x" * 100), "pi", 4242)
     assert caught.value.code == "runtime_dir_unsafe"
+
+
+class SmallSendBuffer(socket.socket):
+    def __init__(self, family: int = socket.AF_UNIX) -> None:
+        super().__init__(family)
+        self.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 2048)
+
+
+def test_a_write_the_endpoint_never_reads_ends_at_the_shared_deadline(
+    endpoint: Callable[[Handler], Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    held = threading.Event()
+
+    def never_reads(conn: socket.socket) -> None:
+        held.wait(5)
+
+    small = SimpleNamespace(socket=SmallSendBuffer, AF_UNIX=socket.AF_UNIX, SHUT_WR=socket.SHUT_WR)
+    monkeypatch.setattr("bellhop.routes.unix.socket", small)
+    path = endpoint(never_reads)
+    body = "x" * 256_000
+    started = time.monotonic()
+    try:
+        result = exchange(path, deliver_header("boundary", "s1", body), body, timeout=0.5)
+    finally:
+        held.set()
+    elapsed = time.monotonic() - started
+
+    assert result.outcome == "busy"
+    assert result.detail.startswith("the write did not finish")
+    assert elapsed < 1.5
