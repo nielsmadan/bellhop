@@ -13,6 +13,7 @@ from types import FrameType
 from bellhop.codes import FAILURE_EXIT, USAGE_EXIT
 from bellhop.files import open_private
 from bellhop.paths import state_dir
+from bellhop.trace import Emit, quiet
 
 SOCKET_WAIT_SECONDS = 15.0
 STOP_SECONDS = 5.0
@@ -116,34 +117,118 @@ def note(text: str) -> None:
     print(f"bellhop: codex session: {text}", file=sys.stderr, flush=True)
 
 
+def start_server(plan: Plan, log_file: Path) -> subprocess.Popen[bytes]:
+    log = server_log(log_file)
+    try:
+        return subprocess.Popen(
+            plan.server, stdin=subprocess.DEVNULL, stdout=log, stderr=log, process_group=0
+        )
+    finally:
+        os.close(log)
+
+
+def exit_status(status: int) -> int:
+    return 128 - status if status < 0 else status
+
+
+@dataclass
+class Attended:
+    child: subprocess.Popen[bytes] | None = None
+    signalled: int | None = None
+
+    def forward(self, signum: int) -> bool:
+        if self.child is None:
+            return False
+        self.signalled = signum
+        with contextlib.suppress(ProcessLookupError):
+            self.child.send_signal(signum)
+        return True
+
+    def attend(self, argv: Sequence[str]) -> int:
+        signal.signal(signal.SIGINT, ignore)
+        self.child = subprocess.Popen(argv)
+        try:
+            status = self.child.wait()
+        finally:
+            self.child = None
+        return 128 + self.signalled if self.signalled is not None else exit_status(status)
+
+
+def forward_signals(attended: Attended, idle: Callable[[int], None]) -> None:
+    def handle(signum: int, frame: FrameType | None) -> None:
+        if not attended.forward(signum):
+            idle(signum)
+            sys.exit(128 + signum)
+
+    for signum in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(signum, handle)
+
+
+def without_server(fallback: Sequence[str] | None, attended: Attended) -> int:
+    if fallback is None:
+        return FAILURE_EXIT
+    note("starting codex without it; bellhop cannot reach this session")
+    try:
+        return attended.attend(fallback)
+    except OSError as error:
+        note(f"cannot run {fallback[0]}: {error.strerror or error}")
+        return FAILURE_EXIT
+
+
+def nothing(signum: int) -> None:
+    return None
+
+
+def run(
+    plan: Plan,
+    log_file: Path,
+    *,
+    fallback: Sequence[str] | None = None,
+    trace: Emit = quiet,
+    keep_log: bool = True,
+) -> int:
+    attended = Attended()
+    try:
+        server = start_server(plan, log_file)
+    except OSError as error:
+        if fallback is None:
+            raise
+        note(f"cannot start the app server: {error.strerror or error}")
+        trace("failed", socket=str(plan.socket), error=str(error), fallback=True)
+        forward_signals(attended, nothing)
+        return without_server(fallback, attended)
+
+    def clean_up(signum: int | None = None) -> None:
+        stop(server)
+        remove_socket(plan.socket, os.getuid())
+        if signum is not None:
+            trace("stop", socket=str(plan.socket), signal=signum)
+
+    forward_signals(attended, clean_up)
+    failed = False
+    try:
+        if wait_for_socket(plan.socket, server):
+            trace("listening", socket=str(plan.socket), server=server.pid)
+            code = attended.attend(plan.tui)
+            trace("stop", socket=str(plan.socket), exit=code, signal=attended.signalled)
+            return code
+        failed = True
+        note(f"the app server did not open {plan.socket}; see {log_file}")
+        trace("failed", socket=str(plan.socket), log=str(log_file), fallback=fallback is not None)
+    except KeyboardInterrupt:
+        return 128 + signal.SIGINT
+    finally:
+        clean_up()
+        if not keep_log and not failed:
+            with contextlib.suppress(OSError):
+                log_file.unlink(missing_ok=True)
+    return without_server(fallback, attended)
+
+
 def main(argv: Sequence[str], env: Mapping[str, str], caller_umask: int) -> int:
     plan = parse(argv)
     if plan is None:
         note("bad arguments")
         return USAGE_EXIT
     os.umask(caller_umask)
-    log_file = log_path(env, plan.socket)
-    log = server_log(log_file)
-    try:
-        server = subprocess.Popen(
-            plan.server, stdin=subprocess.DEVNULL, stdout=log, stderr=log, process_group=0
-        )
-    finally:
-        os.close(log)
-
-    def finish(signum: int, frame: FrameType | None) -> None:
-        stop(server)
-        remove_socket(plan.socket, os.getuid())
-        sys.exit(128 + signum)
-
-    for signum in (signal.SIGTERM, signal.SIGHUP):
-        signal.signal(signum, finish)
-    signal.signal(signal.SIGINT, ignore)
-    try:
-        if not wait_for_socket(plan.socket, server):
-            note(f"the app server did not open {plan.socket}; see {log_file}")
-            return FAILURE_EXIT
-        return subprocess.call(plan.tui)
-    finally:
-        stop(server)
-        remove_socket(plan.socket, os.getuid())
+    return run(plan, log_path(env, plan.socket))

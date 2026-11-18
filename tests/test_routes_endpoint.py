@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from bellhop.models import PushResult
+from bellhop.routes import endpoint_routes
 from bellhop.routes.endpoint import PONG_SECONDS, EndpointRoute, Pongs
 from bellhop.routes.pi import NAME
 from conftest import make_session, pong_line
@@ -178,3 +179,51 @@ def test_a_mismatch_reply_leaves_the_message_waiting(runtime: Path) -> None:
         server.close()
 
     assert result == PushResult("busy", "session_mismatch p2")
+
+
+OLD_WIRE = (
+    "the relay at {path} speaks another wire version; "
+    "restart that claude so it starts the installed bellhop's relay"
+)
+
+
+def claude_route(runtime: Path) -> EndpointRoute:
+    return endpoint_routes(lambda: runtime, Pongs())["claude"]
+
+
+def test_a_missing_relay_says_where_it_looked_and_how_to_start_one(runtime: Path) -> None:
+    session = make_session("c1", harness="claude", pid=4242)
+
+    assert claude_route(runtime).obstacle(session) == (
+        f"no bellhop relay listens at {runtime}/claude-4242.sock; "
+        "start claude with bellhop's MCP config (`bellhop integration show claude`)"
+    )
+
+
+def test_a_session_without_a_pid_cannot_be_looked_up(runtime: Path) -> None:
+    session = make_session("c1", harness="claude", pid=None)
+
+    assert claude_route(runtime).obstacle(session) == (
+        "hooklinesinker reports no pid for this claude session"
+    )
+
+
+@pytest.mark.parametrize(
+    ("handler", "reason"),
+    [
+        (pong("other"), "the relay at {path} serves session other"),
+        (pong("c1", wire=1), OLD_WIRE),
+        (lambda conn: b"", "the relay at {path} does not answer"),
+    ],
+)
+def test_a_relay_that_cannot_serve_the_session_says_why(
+    runtime: Path, handler: Handler, reason: str
+) -> None:
+    path = runtime / "claude-4242.sock"
+    server = serve(path, handler, [])
+    try:
+        found = claude_route(runtime).obstacle(make_session("c1", harness="claude", pid=4242))
+    finally:
+        server.close()
+
+    assert found == reason.format(path=path)

@@ -23,6 +23,7 @@ from bellhop.identity import ancestors, process_table
 from bellhop.paths import configured_dir
 from bellhop.routes.unix import MISMATCH, WIRE, endpoint_path
 from bellhop.runtime import resolve_runtime_dir
+from bellhop.trace import Emit, quiet, tracer
 from bellhop.transcripts.claude import transcript_of
 
 type Priority = Literal["later", "next"]
@@ -430,21 +431,26 @@ class Relay:
     parent: int
     stopping: threading.Event = field(default_factory=threading.Event)
     listener: Listener | None = None
+    trace: Emit = quiet
+
+    def say(self, text: str) -> None:
+        note(text)
+        self.trace("note", text=text)
 
     def start(self) -> None:
         claude_dir = configured_dir(self.env, CONFIG_DIR, ".claude")
         if claude_dir is None:
-            note(f"{CONFIG_DIR} must be an absolute path; not listening")
+            self.say(f"{CONFIG_DIR} must be an absolute path; not listening")
             return
         pid = claude_pid(claude_dir, parent_chain(self.parent), self.env.get(START_SESSION))
         if not belongs_to(self.channel, pid):
-            note(f"the messaging socket here is not claude {pid}'s own; not listening")
+            self.say(f"the messaging socket here is not claude {pid}'s own; not listening")
             return
         try:
             directory = resolve_runtime_dir(self.env, load_config(self.env))
             path = endpoint_path(directory, "claude", pid)
         except BellhopError as error:
-            note(str(error))
+            self.say(str(error))
             return
         listener = Listener(path, path.with_suffix(".lock"))
         self.listener = listener
@@ -453,9 +459,10 @@ class Relay:
         try:
             listener.bind()
         except OSError as error:
-            note(f"cannot listen on {path}: {error.strerror or error}")
+            self.say(f"cannot listen on {path}: {error.strerror or error}")
             listener.close()
             return
+        self.trace("listening", socket=str(path), claude=pid)
         info = partial(current_session, claude_dir, pid)
         threading.Thread(
             target=serve, args=(listener, info, forwarder(self.channel)), daemon=True
@@ -469,11 +476,14 @@ class Relay:
 
 def main(env: Mapping[str, str]) -> int:
     channel = child_channel(env)
+    trace = tracer(env, "relay")
     if channel is None:
-        note(f"{CHILD_SOCKET} and {CHILD_TOKEN} are not set; nothing to deliver to")
+        text = f"{CHILD_SOCKET} and {CHILD_TOKEN} are not set; nothing to deliver to"
+        note(text)
+        trace("note", text=text)
         answer_mcp(sys.stdin, sys.stdout)
         return 0
-    relay = Relay(env, channel, os.getppid())
+    relay = Relay(env, channel, os.getppid(), trace=trace)
 
     def stop(*_: object) -> None:
         relay.close()

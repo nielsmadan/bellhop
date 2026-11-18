@@ -5,8 +5,9 @@ harness's own in-process route, at one of three urgency levels, and start a stop
 asked.
 
 - **Claude Code** through bellhop's relay, an MCP server you add once.
-- **Codex** through the app server the session is attached to (the shared daemon a plain `codex`
-  starts, or the one `bellhop launch` starts); a `codex --no-daemon` session has no route.
+- **Codex** through an app server bellhop can find: start the session with `bellhop codex`, which
+  runs one for it. A plain `codex` is reachable only while it is attached to Codex's shared
+  daemon, which it is not when started with `-c` overrides or `--no-daemon`.
 - **Pi** through bellhop's Pi extension.
 
 bellhop learns which sessions are live from
@@ -28,7 +29,9 @@ bellhop bind <agent> [--json]                       # bind the calling session t
 bellhop launch <agent> [--prompt TEXT] [--from NAME] [--key KEY] [--cause TEXT] [--no-wait] [--json]
 bellhop integration show <claude|codex|pi|skill> [--json]   # what to install, and where
 bellhop integration export <claude|pi|skill> --to DIR   # copy the Pi extension, Claude's MCP config or the skill to DIR
+bellhop codex [CODEX ARGUMENTS...]                  # start codex so that bellhop can reach the session
 bellhop doctor [--prune] [--json]
+bellhop log [TEXT...] [-n N] [--errors] [--json]    # what bellhop did lately, from its trace file
 bellhop --version
 ```
 

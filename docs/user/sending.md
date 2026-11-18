@@ -19,6 +19,9 @@ anything else is `usage` and names the character. A CRLF line ending is read as 
 3. a session-id prefix of 4 or more characters that matches one live session;
 4. a title that exactly one live session has.
 
+A Codex session's title is its thread name: the one Codex generated, or the one you gave it with
+`/rename`.
+
 No match, or more than one, is exit 3 with the candidates listed. `bellhop sessions` and
 `bellhop agents` show what can be addressed.
 

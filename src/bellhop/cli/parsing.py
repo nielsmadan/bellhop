@@ -94,8 +94,24 @@ def build_parser() -> argparse.ArgumentParser:
     export = _command(actions, "export", "copy the integration to a directory you control")
     export.add_argument("harness", choices=EXPORTS, help="what to copy: %(choices)s")
     export.add_argument("--to", required=True, metavar="DIR", help="the directory to copy into")
+    commands.add_parser(
+        "codex",
+        help="start codex with an app server bellhop can reach; arguments go to codex",
+        add_help=False,
+    )
     doctor = _command(commands, "doctor", "check hls, directories, store and sockets")
     doctor.add_argument("--prune", action="store_true", help="delete old messages and dead sockets")
+    log = _command(commands, "log", "show what bellhop did lately, from its trace file")
+    log.add_argument(
+        "words",
+        nargs="*",
+        metavar="TEXT",
+        help="show only events that contain every TEXT, such as a message id or a session id",
+    )
+    log.add_argument(
+        "-n", "--lines", type=_count, default=40, metavar="N", help="how many events (default 40)"
+    )
+    log.add_argument("--errors", action="store_true", help="show only what failed or was refused")
     return parser
 
 
@@ -117,7 +133,15 @@ def _seconds(text: str) -> float:
     return value
 
 
+def _count(text: str) -> int:
+    if not text.isdigit() or int(text) < 1:
+        raise argparse.ArgumentTypeError(f"'{text}' is not a positive number")
+    return int(text)
+
+
 def parse(argv: Sequence[str]) -> argparse.Namespace:
+    if argv[:1] == ["codex"]:
+        return argparse.Namespace(command="codex", arguments=list(argv[1:]), version=False)
     return build_parser().parse_args(argv)
 
 

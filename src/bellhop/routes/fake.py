@@ -29,6 +29,9 @@ class FakeRoute:
     def reachable(self, session: Session) -> bool:
         return self.is_reachable
 
+    def obstacle(self, session: Session) -> str:
+        return "the fake route is set unreachable"
+
     def replaced(self, session: Session) -> bool:
         return self.is_replaced
 

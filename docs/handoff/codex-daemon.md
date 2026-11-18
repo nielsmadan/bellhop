@@ -1,40 +1,62 @@
-# The Codex daemon and bellhop
+# Codex and bellhop
 
-**What to do:** check one setting in your Codex config; change nothing if it is already on. This
-note was written from measurements on an isolated Codex home (Codex 0.167.1) only; your own daemon
-was never started, stopped, queried or connected to.
+**What to do:** start Codex through `bellhop codex` (change your `codex` and `codex-raw` wrappers
+as shown below), then restart the Codex sessions you want reachable. Nothing here was applied.
 
-## The setting
+## Why
 
-```toml
-# $CODEX_HOME/config.toml (default ~/.codex/config.toml)
-[features]
-daemon_auto_start = true
+bellhop reaches a Codex session through an app server it can connect to. Your wrappers in
+`~/ac/.airc.d/codex.zsh` pass `-c sandbox_mode="danger-full-access"` on every start, and Codex
+0.167.1 keeps a session with such an override off its shared daemon (it shows "Running without the
+shared background server: command-line configuration overrides … requires embedded mode"). On
+2026-11-15 none of your 15 Codex sessions was reachable, sandboxed or not. See
+[ADR 0007](../decisions/0007-codex-session-servers.md).
+
+`bellhop codex [CODEX ARGUMENTS...]` starts an app server for the session and attaches the Codex
+terminal UI to it. Every argument goes to `codex` unchanged, and anything that is not an
+interactive start (`exec`, `login`, `--version`, …) runs as plain `codex`.
+
+## The wrapper change
+
+In `~/ac/.airc.d/codex.zsh`, put `bellhop` in front of `codex` in the three launch lines:
+
+```zsh
+AGENT_HARNESS=codex sops-exec bellhop codex "$@"                     # in _codex_launch, unsandboxed profile
+AGENT_HARNESS=codex _agent_sandboxed codex-local bellhop codex -c sandbox_mode='"danger-full-access"' -c approval_policy='"never"' "$@"
+_codex_raw_launch() { AGENT_HARNESS=codex sops-exec bellhop codex -c sandbox_mode='"danger-full-access"' "$@"; }
 ```
 
-It is stable and on by default in Codex 0.167.1, so it only needs attention if you turned it off.
+Try one line by hand first, in a folder Codex already trusts:
 
-## What it changes
+```sh
+AGENT_HARNESS=codex sops-exec bellhop codex -c 'sandbox_mode="danger-full-access"'
+```
 
-- **On:** a plain `codex` starts a shared app server (the daemon) in its `CODEX_HOME` if none is
-  running and attaches its TUI to it. bellhop reaches every such session through the daemon's
-  socket (`$CODEX_HOME/app-server-control/app-server-control.sock`): `idle` messages start a turn
-  when the thread is idle, and `now` messages steer a running turn. A message appears in the
-  attached TUI like a typed prompt.
-- **Off, or `codex --no-daemon`:** the TUI runs its own private app server that bellhop cannot
-  reach. `bellhop send` to that session answers `no_route` (exit 4), or stores a `hold` with
-  `--or-hold` that the session reads with `bellhop inbox`.
-- `bellhop launch` does not depend on the setting: it starts its own app server for each Codex
-  agent it launches.
+Give it one prompt (hooklinesinker lists a Codex thread only after its first turn), then
+`bellhop sessions --json` shows it `reachable: true` on `codex-app-server`.
 
-## What to expect when it is on
+## What was and was not tested
 
-- **The daemon updates and restarts itself.** When a newer Codex is available, its updater
-  installs it and restarts the daemon after a 60 s grace (seen five to seven minutes after start).
-  Running TUIs keep working. After a restart hooklinesinker stops listing the daemon's threads
-  until each thread's next turn, so for that window bellhop cannot reach them: a message to the
-  session id waits, and an agent bound to one is shown `failed` until its next turn.
-- **A quit TUI's thread stays loaded in the daemon.** A message to it starts a turn that no TUI
-  shows.
-- **One daemon per `CODEX_HOME`.** Sessions with another `CODEX_HOME` attach to another daemon;
-  give an agent's `CODEX_HOME` in its bellhop config `env` so bellhop finds the right one.
+- **Tested on your machine, unsandboxed:** `bellhop codex -c model_reasoning_effort="low" -c
+  sandbox_mode="read-only"` in `~/wrksp/efg-all`: delivered, confirmed, answered; both overrides
+  were in force in the session.
+- **Not tested: `sandbox_mode="danger-full-access"`.** The session that built this was not allowed
+  to start a Codex with its sandbox off.
+- **Not tested: inside nono.** The sandboxed line needs two things from the `codex-local` profile:
+  it must be able to run `bellhop` (`~/.local/bin/bellhop` and the tool's files under
+  `~/.local/share/uv/tools/bellhop`), and Codex must be able to create its socket (group 3 in
+  [nono-grants.md](nono-grants.md)). If either is missing, `bellhop codex` either fails to start
+  (the first) or warns and starts plain `codex` (the second), and the session is unreachable as
+  it is today.
+
+## What to expect
+
+- **One more process per Codex session:** the `bellhop codex` wrapper, which waits for the
+  terminal UI. The app server replaces the one Codex ran inside the terminal UI's process.
+- **The app server stops when you quit Codex.** A message to that session then fails as
+  `session gone`.
+- **`daemon_auto_start` no longer matters for these sessions.** It still decides whether a plain
+  `codex` with no overrides attaches to the shared daemon, which bellhop also reaches.
+- **The daemon updates and restarts itself** (plain `codex` sessions only). After a restart
+  hooklinesinker stops listing the daemon's threads until each thread's next turn, so for that
+  window bellhop cannot reach them.

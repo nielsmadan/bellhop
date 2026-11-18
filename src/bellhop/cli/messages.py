@@ -85,7 +85,8 @@ def choose(target: Target, urgency: Urgency, ctx: Context, *, or_hold: bool) -> 
     if or_hold:
         return Delivery(session, None, "hold", urgency)
     raise BellhopError(
-        f"no usable route to '{target_label(target)}' ({target.harness or 'unknown harness'})",
+        f"no usable route to '{target_label(target)}' ({target.harness or 'unknown harness'}); "
+        f"{ctx.obstacle(route, session)}",
         code=NO_ROUTE,
     )
 
@@ -165,6 +166,7 @@ def wait_for_confirmation(
 
 
 def emit_message(stored: Message, args: argparse.Namespace, ctx: Context) -> int:
+    ctx.trace("message", **message_object(stored))
     if stored.state == "failed" and failed_start_detail(stored.detail):
         raise BellhopError(
             f"the start for {stored.id} failed: {stored.detail}", code=LAUNCH_FAILED, stored=stored

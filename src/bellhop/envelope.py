@@ -7,6 +7,7 @@ from bellhop.errors import BellhopError
 BODY_LIMIT = 8000
 SENDER_LIMIT = 80
 UNSAFE_SENDER = re.compile(r"[\x00-\x1f\x7f-\x9f\]\[]+")
+ENVELOPE_ID = re.compile(r"\[bellhop (\S+) from")
 
 
 def check_controls(text: str, what: str) -> str:
@@ -40,6 +41,11 @@ def clean_sender(name: str) -> str:
 
 def prefix(message_id: str) -> str:
     return f"[bellhop {message_id} from"
+
+
+def message_id(text: str) -> str | None:
+    found = ENVELOPE_ID.match(text)
+    return found.group(1) if found else None
 
 
 def render(message_id: str, sender: str, body: str, waiting: int) -> str:

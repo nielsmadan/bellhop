@@ -319,3 +319,59 @@ def test_an_unreadable_status_is_reported_as_unknown(short_tmp: Path) -> None:
         result = CodexRoute(path).push(SESSION, "x", interrupt=False)
 
     assert result == PushResult("busy", "the thread's status is unknown")
+
+
+def test_a_session_started_by_bellhop_codex_is_found_on_its_own_server(short_tmp: Path) -> None:
+    daemon, own = short_tmp / "daemon.sock", short_tmp / "codex-77.sock"
+    with app_server(daemon, loaded=["another-thread"]), app_server(own, loaded=[THREAD]) as server:
+        route = CodexRoute(daemon, sessions=lambda: [short_tmp / "codex-gone.sock", own])
+        found = (route.reachable(SESSION), route.busy(SESSION))
+        result = route.push(SESSION, "[bellhop bh_1 from x] hi", interrupt=False)
+
+    assert found == (True, False)
+    assert result == PushResult("accepted", "turn/start turn-1")
+    assert "turn/start" in server.methods()
+
+
+def test_an_unreachable_thread_says_how_many_servers_were_asked(short_tmp: Path) -> None:
+    daemon, own = short_tmp / "daemon.sock", short_tmp / "codex-77.sock"
+    with app_server(daemon, loaded=[]), app_server(own, loaded=["another-thread"]):
+        route = CodexRoute(daemon, sessions=lambda: [own])
+        found = (route.reachable(SESSION), route.obstacle(SESSION))
+        result = route.push(SESSION, "hi", interrupt=False)
+
+    assert found[0] is False
+    assert found[1].startswith("none of the 2 codex app servers bellhop can reach has this thread")
+    assert found[1].endswith("start the session with `bellhop codex`")
+    assert result == PushResult("busy", "no app server has this thread loaded")
+
+
+def test_no_server_at_all_is_its_own_reason(short_tmp: Path) -> None:
+    route = CodexRoute(short_tmp / "daemon.sock")
+
+    assert route.obstacle(SESSION) == (
+        "no codex app server bellhop can reach is running; start the session with `bellhop codex`"
+    )
+
+
+def test_the_sessions_own_server_is_used_when_the_daemon_lists_the_thread_too(
+    short_tmp: Path,
+) -> None:
+    daemon, own = short_tmp / "daemon.sock", short_tmp / "codex-77.sock"
+    with app_server(daemon, loaded=[THREAD]) as shared, app_server(own, loaded=[THREAD]) as server:
+        result = CodexRoute(daemon, sessions=lambda: [own]).push(SESSION, "hi", interrupt=False)
+
+    assert result.outcome == "accepted"
+    assert ("turn/start" in server.methods(), "turn/start" in shared.methods()) == (True, False)
+
+
+def test_a_bound_agents_own_server_comes_before_the_other_session_servers(
+    short_tmp: Path,
+) -> None:
+    other, agent = short_tmp / "codex-11.sock", short_tmp / "codex-enki-abcd.sock"
+    with app_server(other, loaded=[THREAD]) as stray, app_server(agent, loaded=[THREAD]) as server:
+        route = CodexRoute(agent, sessions=lambda: [other, agent])
+        result = route.push(SESSION, "hi", interrupt=False)
+
+    assert result.outcome == "accepted"
+    assert ("turn/start" in server.methods(), "turn/start" in stray.methods()) == (True, False)

@@ -1,10 +1,10 @@
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from bellhop.codex_rpc import Client, RpcError, Turn, Unwritten, connect, reason
-from bellhop.models import Binding, PushResult, Session
+from bellhop.models import PushResult, Session
 
 NAME = "codex-app-server"
 PROBE_SECONDS = 0.5
@@ -12,16 +12,12 @@ PUSH_SECONDS = 2.0
 CONTROL_SOCKET = Path("app-server-control") / "app-server-control.sock"
 FAILURES = (OSError, RpcError, ValueError)
 MEMO_SECONDS = 1.0
+SESSION_SOCKETS = "codex-*.sock"
+START_WITH_BELLHOP = "start the session with `bellhop codex`"
 
 
 def daemon_socket(codex_home: Path | None) -> Path | None:
     return codex_home / CONTROL_SOCKET if codex_home is not None else None
-
-
-def codex_socket(binding: Binding | None, codex_home: Path | None) -> Path | None:
-    if binding is not None and binding.app_server_socket:
-        return Path(binding.app_server_socket)
-    return daemon_socket(codex_home)
 
 
 @dataclass
@@ -81,30 +77,63 @@ class Probes:
 class CodexRoute:
     socket: Path | None
     probes: Probes = field(default_factory=Probes, compare=False)
+    sessions: Callable[[], Sequence[Path]] = field(default=tuple, compare=False)
     name: str = field(default=NAME, init=False)
     can_interrupt: bool = field(default=True, init=False)
     queues_until_idle: bool = field(default=False, init=False)
 
+    def listening(self) -> list[Path]:
+        own = tuple(self.sessions())
+        given = [self.socket] if self.socket is not None else []
+        first = [path for path in given if path in own]
+        return [path for path in dict.fromkeys((*first, *own, *given)) if path.exists()]
+
+    def home(self, session: Session) -> Path | None:
+        thread = session.session_id
+        return next(
+            (
+                path
+                for path in self.listening()
+                if thread in (self.probes.names(path, thread) or ())
+            ),
+            None,
+        )
+
+    def target(self, session: Session) -> Path | None:
+        others = [path for path in self.sessions() if path != self.socket]
+        return self.home(session) if others else self.socket
+
     def reachable(self, session: Session) -> bool:
-        if self.socket is None or not self.socket.exists():
-            return False
-        names = self.probes.names(self.socket, session.session_id)
-        return names is not None and session.session_id in names
+        return self.home(session) is not None
+
+    def obstacle(self, session: Session) -> str:
+        servers = len(self.listening())
+        if not servers:
+            return f"no codex app server bellhop can reach is running; {START_WITH_BELLHOP}"
+        return (
+            f"none of the {servers} codex app servers bellhop can reach has this thread loaded "
+            "(a codex started with -c overrides, --profile or --no-daemon runs a private one); "
+            f"{START_WITH_BELLHOP}"
+        )
 
     def replaced(self, session: Session) -> bool:
         return False
 
     def busy(self, session: Session) -> bool | None:
-        if self.socket is None:
+        target = self.target(session)
+        if target is None:
             return None
-        turn = self.probes.turn(self.socket, session.session_id)
+        turn = self.probes.turn(target, session.session_id)
         return turn.state != "idle" if turn is not None else None
 
     def push(self, session: Session, text: str, *, interrupt: bool) -> PushResult:
-        if self.socket is None:
-            return PushResult("busy", "no app server is known for this codex session")
+        target = self.target(session)
+        if target is None:
+            known = self.socket is not None or bool(self.sessions())
+            missing = "has this thread loaded" if known else "is known for this codex session"
+            return PushResult("busy", f"no app server {missing}")
         try:
-            client = connect(self.socket, PUSH_SECONDS)
+            client = connect(target, PUSH_SECONDS)
         except FAILURES as error:
             return PushResult("busy", f"app server not reachable: {reason(error)}")
         with client:

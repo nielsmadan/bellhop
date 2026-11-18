@@ -97,7 +97,7 @@ def test_sessions_text_prints_hls_problems_as_warnings_on_stderr(
 
     assert main(["sessions"]) == 0
 
-    assert capsys.readouterr().err == "bellhop: warning: sink unreachable\n"
+    assert capsys.readouterr().err == "bellhop: warning: hooklinesinker reports: sink unreachable\n"
 
 
 def test_sessions_json_prints_exactly_one_object_and_nothing_on_stderr(
@@ -113,13 +113,15 @@ def test_sessions_json_prints_exactly_one_object_and_nothing_on_stderr(
     payload = json.loads(captured.out)
     assert payload["schema_version"] == 1
     assert payload["status"] == "ok"
-    assert payload["warnings"] == ["sink unreachable"]
+    assert payload["warnings"] == ["hooklinesinker reports: sink unreachable"]
     assert [s["session_id"] for s in payload["sessions"]] == [
         "2e2042a9-937c-4e03",
         "019a1b2c-3d4e",
         "p1",
     ]
-    assert payload["sessions"][0] == {
+    first = payload["sessions"][0]
+    assert first.pop("reason").startswith("no bellhop relay listens at ")
+    assert first == {
         "session_id": "2e2042a9-937c-4e03",
         "harness": "claude",
         "title": "title-2e2042a9-937c-4e03",

@@ -29,8 +29,9 @@ PROBE_BUDGET_SECONDS = 5.0
 
 def session_row(session: Session, ctx: Context, *, probe: bool) -> dict[str, object]:
     agent = agent_of(session, ctx.bindings)
-    route = ctx.routes(session, binding_for(session, ctx.bindings))
+    route = ctx.wiring.untraced(session, binding_for(session, ctx.bindings))
     reachable = route is not None and probe and ctx.reachable(route, session)
+    reason = None if reachable or not probe else ctx.obstacle(route, session)
     pending = pending_count(ctx.conn, "session", session.session_id) + (
         pending_count(ctx.conn, "agent", agent) if agent else 0
     )
@@ -39,6 +40,7 @@ def session_row(session: Session, ctx: Context, *, probe: bool) -> dict[str, obj
         agent=agent,
         route=route.name if route is not None and reachable else None,
         reachable=reachable,
+        reason=reason,
         pending=pending,
     )
 
@@ -65,6 +67,7 @@ def sessions(args: argparse.Namespace, ctx: Context) -> int:
                 f"stopped checking routes after {PROBE_BUDGET_SECONDS:g}s; "
                 f"the last {skipped} sessions show reachable: false unchecked"
             )
+        ctx.trace("sessions", listed=len(rows), reachable=sum(1 for r in rows if r["reachable"]))
         print_json(ok_payload(ctx.warnings, {"sessions": rows}))
         return 0
     print_warnings(ctx.warnings)

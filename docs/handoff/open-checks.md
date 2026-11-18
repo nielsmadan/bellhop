@@ -39,15 +39,35 @@ just smoke
 
 Expect the delivery cells to pass; the permission-dialog cells will report that no dialog opened.
 
-## 3. Where `/tmp/bellhop-501` came from
+## 3. `bellhop codex` the way your wrappers start Codex
+
+Not run: the session that built `bellhop codex` was not allowed to start a Codex with its sandbox
+off, and could not test inside nono. It was tested unsandboxed with `-c sandbox_mode="read-only"`
+only ([codex-daemon.md](codex-daemon.md)).
+
+Unsandboxed, in a folder Codex already trusts:
+
+```sh
+AGENT_HARNESS=codex sops-exec bellhop codex -c 'sandbox_mode="danger-full-access"'
+```
+
+Give it one prompt, then from another terminal:
+
+```sh
+bellhop sessions --json          # that session: "reachable": true, "route": "codex-app-server"
+bellhop send <session-id> "reply with: pong" --confirm 60
+bellhop log -n 20
+```
+
+Then the same inside nono, with the sandboxed line from codex-daemon.md. If the session starts
+but `bellhop log failed` shows a `failed` event from `codex`, the app server could not open its
+socket: `nono why --self --path /private/tmp/codex-daemon-501 --op readwrite` and `nono why --self
+--path /private/tmp/bellhop-501 --op readwrite` say which grant is missing.
+
+## 4. Where `/tmp/bellhop-501` came from
 
 Found: two unit tests in `tests/test_cli.py` (`sessions` checking each endpoint session's route)
 resolved the default runtime dir before the test fixture gave every test a private one; it was
 created on 2026-11-14 at 10:01:47 local time. It is empty and mode 0700. Every test now gets its
 own runtime dir and fails if it reaches `/tmp/bellhop-<uid>`.
-Remove it yourself if no bellhop session of yours uses it:
-
-```sh
-ls -la /tmp/bellhop-501          # empty means unused
-rmdir /tmp/bellhop-501
-```
+It is now bellhop's real runtime directory: leave it.

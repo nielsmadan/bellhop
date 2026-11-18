@@ -62,7 +62,13 @@ def message_object(message: Message) -> dict[str, object]:
 
 
 def session_object(
-    session: Session, *, agent: str | None, route: str | None, reachable: bool, pending: int
+    session: Session,
+    *,
+    agent: str | None,
+    route: str | None,
+    reachable: bool,
+    reason: str | None,
+    pending: int,
 ) -> dict[str, object]:
     return {
         "session_id": session.session_id,
@@ -74,6 +80,7 @@ def session_object(
         "agent": agent,
         "reachable": reachable,
         "route": route,
+        "reason": reason,
         "pending": pending,
     }
 

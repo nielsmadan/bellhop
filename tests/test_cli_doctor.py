@@ -1,3 +1,4 @@
+import hashlib
 import os
 import socket
 from datetime import UTC, datetime, timedelta
@@ -6,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from bellhop.cli import main
-from bellhop.cli.doctor import NEWER_WIRE, remove_if_unchanged, socket_inode
+from bellhop.cli.doctor import NEWER_WIRE, inside, remove_if_unchanged, socket_inode
 from bellhop.drain import DrainLock, DrainStatus, lock_path, status_path, write_status
 from bellhop.routes import ENDPOINTS
 from bellhop.routes.pi import UNLISTED_PI
@@ -344,3 +345,25 @@ def test_doctor_fails_a_drainer_that_cannot_run_hooklinesinker(bell: Bell, runti
             ),
         ),
     )
+
+
+def test_a_dead_codex_session_link_is_reported_and_pruned_with_its_target(
+    bell: Bell, runtime: Path, tmp_path: Path
+) -> None:
+    runtime.mkdir(mode=0o700)
+    link = runtime / "codex-77.sock"
+    name = hashlib.sha256(str(link.parent.resolve() / link.name).encode()).hexdigest()
+    target = tmp_path / f"codex-daemon-{os.getuid()}" / name
+    target.parent.mkdir()
+    dead = socket.socket(socket.AF_UNIX)
+    with inside(target.parent):
+        dead.bind(target.name)
+    dead.close()
+    link.symlink_to(target)
+
+    _, before = bell.run("doctor")
+    _, payload = bell.run("doctor", "--prune")
+
+    assert before["error"]["code"] == "doctor_failed"
+    assert payload["pruned"]["sockets"] == 1
+    assert (link.is_symlink(), target.exists()) == (False, False)

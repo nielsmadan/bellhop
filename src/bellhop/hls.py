@@ -4,13 +4,14 @@ import shutil
 import subprocess
 import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
+from bellhop.codex_names import named
 from bellhop.errors import HlsUnavailable
 from bellhop.models import HARNESSES, PHASES, Harness, Session
-from bellhop.paths import data_home
+from bellhop.paths import configured_dir, data_home
 
 PROTOCOL = 1
 BUDGET_SECONDS = 5.0
@@ -107,7 +108,9 @@ def list_sessions(
     if result.returncode != 0:
         detail = first_line(result.stderr or result.stdout) or "no output"
         raise HlsUnavailable(f"hooklinesinker sessions --json exited {result.returncode}: {detail}")
-    return parse_sessions(result.stdout)
+    listed = parse_sessions(result.stdout)
+    codex_home = configured_dir(env, "CODEX_HOME", ".codex")
+    return replace(listed, sessions=named(listed.sessions, codex_home))
 
 
 def _load(text: str) -> dict[str, object]:
@@ -145,7 +148,7 @@ def parse_sessions(text: str) -> SessionList:
     return SessionList(
         sessions=collapse([outcome for outcome in outcomes if isinstance(outcome, Session)]),
         warnings=(
-            *(_problem_text(problem) for problem in problems),
+            *(f"hooklinesinker reports: {_problem_text(problem)}" for problem in problems),
             *(outcome for outcome in outcomes if isinstance(outcome, str)),
         ),
     )

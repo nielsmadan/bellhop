@@ -11,9 +11,9 @@ PACKAGE = "bellhop"
 LAYERS: tuple[tuple[str, ...], ...] = (
     ("__init__", "codes", "models", "allowlist", "files"),
     ("errors", "codex_rpc"),
-    ("paths", "jsonout", "store", "envelope", "transcripts", "routes", "readiness"),
-    ("config", "identity", "hls", "tmux", "codex_session"),
-    ("runtime", "targets"),
+    ("paths", "jsonout", "store", "envelope", "transcripts", "routes", "readiness", "codex_names"),
+    ("config", "identity", "hls", "tmux", "trace"),
+    ("runtime", "targets", "codex_session"),
     ("delivery", "wiring", "launch"),
     ("drain", "relay"),
     ("cli", "testing"),
@@ -38,7 +38,18 @@ IMPORTS_ALLOWED: Mapping[str, frozenset[str]] = {
     "routes": frozenset({"codes", "codex_rpc", "errors", "models"}),
     "delivery": frozenset({"envelope", "models", "routes", "store", "transcripts"}),
     "wiring": frozenset(
-        {"config", "errors", "models", "paths", "routes", "runtime", "transcripts"}
+        {
+            "codex_names",
+            "config",
+            "envelope",
+            "errors",
+            "models",
+            "paths",
+            "routes",
+            "runtime",
+            "trace",
+            "transcripts",
+        }
     ),
     "drain": frozenset(
         {
@@ -55,19 +66,21 @@ IMPORTS_ALLOWED: Mapping[str, frozenset[str]] = {
             "store",
             "targets",
             "tmux",
+            "trace",
             "transcripts",
             "wiring",
         }
     ),
     "relay": frozenset(
-        {"config", "errors", "identity", "paths", "routes", "runtime", "transcripts"}
+        {"config", "errors", "identity", "paths", "routes", "runtime", "trace", "transcripts"}
     ),
     "config": frozenset({"codes", "errors", "models", "paths"}),
     "readiness": frozenset({"models"}),
     "allowlist": frozenset(),
     "files": frozenset(),
     "tmux": frozenset({"allowlist", "codes", "errors"}),
-    "codex_session": frozenset({"codes", "files", "paths"}),
+    "codex_session": frozenset({"codes", "files", "paths", "trace"}),
+    "trace": frozenset({"files", "paths"}),
     "launch": frozenset(
         {
             "allowlist",
@@ -88,7 +101,8 @@ IMPORTS_ALLOWED: Mapping[str, frozenset[str]] = {
     "runtime": frozenset({"codes", "config", "errors"}),
     "identity": frozenset({"codes", "errors", "models"}),
     "targets": frozenset({"codes", "config", "errors", "identity", "models"}),
-    "hls": frozenset({"errors", "models", "paths"}),
+    "hls": frozenset({"codex_names", "errors", "models", "paths"}),
+    "codex_names": frozenset({"models"}),
     "cli": frozenset(
         {
             "codes",
@@ -110,6 +124,7 @@ IMPORTS_ALLOWED: Mapping[str, frozenset[str]] = {
             "store",
             "targets",
             "tmux",
+            "trace",
             "transcripts",
             "wiring",
         }
@@ -129,11 +144,13 @@ SIBLING_IMPORTS_ALLOWED: Mapping[str, Mapping[str, frozenset[str]]] = {
         "info": frozenset({"context", "presentation"}),
         "doctor": frozenset({"context", "presentation"}),
         "integration": frozenset({"context", "presentation"}),
+        "log": frozenset({"context", "presentation"}),
+        "codex": frozenset({"presentation"}),
         "dispatch": frozenset(
-            {"context", "doctor", "info", "integration", "launching", "messages", "parsing"}
+            {"context", "doctor", "info", "integration", "launching", "log", "messages", "parsing"}
         ),
         "command": frozenset({"dispatch", "parsing", "presentation"}),
-        "__init__": frozenset({"command"}),
+        "__init__": frozenset({"codex", "command"}),
     },
     "routes": {
         "fake": frozenset(),

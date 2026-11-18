@@ -1,10 +1,12 @@
 import json
+import os
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
+from bellhop.errors import BellhopError
 from bellhop.models import Binding
-from bellhop.routes import RouteSetup, route_finder
+from bellhop.routes import RouteSetup, route_finder, session_sockets
 from bellhop.routes.codex import CodexRoute
 from bellhop.routes.endpoint import EndpointRoute
 from bellhop.routes.fake import FakeRoute
@@ -87,3 +89,21 @@ def test_an_echoing_fake_route_writes_the_transcript_the_plain_reader_reads(tmp_
     assert isinstance(
         reader_finder(ReaderSetup(tmp_path, fake=True))(session, None), PlainTranscripts
     )
+
+
+def test_only_links_into_codex_s_socket_directory_count_as_session_servers(tmp_path: Path) -> None:
+    daemons = tmp_path / f"codex-daemon-{os.getuid()}"
+    daemons.mkdir()
+    (tmp_path / "codex-11.sock").symlink_to(daemons / "abc")
+    (tmp_path / "codex-22.sock").symlink_to(tmp_path / "elsewhere")
+    (tmp_path / "codex-33.sock").touch()
+    (tmp_path / "claude-44.sock").symlink_to(daemons / "def")
+
+    assert session_sockets(lambda: tmp_path) == (tmp_path / "codex-11.sock",)
+
+
+def test_a_runtime_dir_that_cannot_be_used_has_no_session_servers() -> None:
+    def refuse() -> Path:
+        raise BellhopError("runtime directory /x is not a directory", code="runtime_dir_unsafe")
+
+    assert session_sockets(refuse) == ()

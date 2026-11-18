@@ -27,9 +27,9 @@ says makes the drainer do more than deliver text to a session:
   else at `/opt/homebrew/bin/tmux`, `/usr/local/bin/tmux` or `/usr/bin/tmux`, and hooklinesinker the
   same way it always does;
 - it never writes through a link planted there. The files it writes (`bellhop.sqlite`,
-  `drain.lock`, `drain.log`, `drain.status.json`, `codex-<agent>.log`) are opened without following
-  a symlink and refused unless each is a regular file of yours with one link; the status file and
-  the Codex log are created fresh each time. A planted `bellhop.sqlite-wal` or `-shm` is removed
+  `drain.lock`, `drain.log`, `drain.status.json`, `trace.jsonl`, `codex-<agent>.log`) are opened
+  without following a symlink and refused unless each is a regular file of yours with one link; the
+  status file and the Codex log are created fresh each time. A planted `bellhop.sqlite-wal` or `-shm` is removed
   and each is created as such a file before SQLite opens the store, and SQLite itself refuses a
   symlinked one; a hard link put there in the gap between that check and SQLite's own open is not
   caught. `launch/<agent>.lock` and the relay's `claude-<pid>.lock` are opened without following a
@@ -37,7 +37,12 @@ says makes the drainer do more than deliver text to a session:
 - it reads `drain.status.json` and `drain.lock` without following a link, without blocking, and
   only when each is a regular file;
 - it contacts only the tmux server `config.toml`'s `tmux_socket` names; a start whose row names
-  another server fails without tmux being run.
+  another server fails without tmux being run;
+- it speaks to a Codex app server only at a socket of yours in a private directory: the one a
+  binding names, the shared daemon's, and each `codex-*.sock` in the runtime directory that is a
+  link into `/private/tmp/codex-daemon-501`. A sandboxed agent that can write that directory
+  (group 3) can put a server of its own there and swallow messages meant for a Codex session;
+  without group 3 it cannot.
 
 What it does deliver is the text itself, under the sender name the row carries.
 
@@ -73,8 +78,8 @@ directory are read-write.
 
 | Path | Access | Why |
 |---|---|---|
-| `/private/tmp/bellhop-501` | readwrite | runtime dir: created 0700; the Claude relay's and Pi extension's sockets |
-| `~/.local/state/bellhop` | readwrite | `bellhop.sqlite` (+ `-wal`, `-shm`), `drain.lock`, `drain.log`, `drain.status.json`, `launch/<agent>.lock`, `codex-<agent>.log` |
+| `/private/tmp/bellhop-501` | readwrite | runtime dir: created 0700; the Claude relay's and Pi extension's sockets, and the link to each `bellhop codex` session's socket |
+| `~/.local/state/bellhop` | readwrite | `bellhop.sqlite` (+ `-wal`, `-shm`), `drain.lock`, `drain.log`, `drain.status.json`, `trace.jsonl` (+ `.1`), `launch/<agent>.lock`, `codex-<agent>.log`, `codex-session-<pid>.log` |
 | `~/.config/bellhop/config.toml` | read | agents, `runtime_dir`, `tmux_socket` (the Pi extension reads it too) |
 | `~/.local/share/hooklinesinker` | read | the `hooklinesinker` binary bellhop runs |
 | `~/.local/state/hooklinesinker` | readwrite | `hooklinesinker sessions --json` takes `status.lock` and makes its directories private; it is not a read-only call |
@@ -118,6 +123,17 @@ other client can.
 
 **Without it:** a message to a Codex session waits (`pending`, or `no_route` when sent directly)
 until a drainer outside the sandbox delivers it. Claude and Pi messages are unaffected.
+
+**A sandboxed Codex session needs it to receive at all.** Codex puts the real socket of every app
+server in `/private/tmp/codex-daemon-501`, also for the one `bellhop codex` starts for a session;
+bellhop's runtime directory only holds a link to it. Without readwrite there, a sandboxed
+`bellhop codex` cannot open its socket, says so, and starts plain `codex`, which nothing can
+reach. With it, that session can also reach every other Codex app server, as described above.
+`~/.codex/app-server-control` is only needed for plain `codex` sessions on the shared daemon.
+
+**The trace is in group 1's state directory.** A sandboxed agent with group 1 can read
+`trace.jsonl`: every bellhop command line run by any session, message texts given as arguments
+included (the store it can already read holds the same texts).
 
 ## 4. Transcripts: to confirm delivery
 

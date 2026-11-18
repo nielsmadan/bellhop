@@ -12,8 +12,9 @@ from bellhop.models import Binding, Session
 from bellhop.paths import state_dir
 from bellhop.routes import Route, RouteFinder
 from bellhop.store import FILE_NAME, open_store
+from bellhop.trace import Emit, quiet
 from bellhop.transcripts import ReaderFinder
-from bellhop.wiring import Wiring, wire
+from bellhop.wiring import Wiring, why_not, wire
 
 type Starter = Callable[[Mapping[str, str]], int | None]
 
@@ -28,6 +29,7 @@ class Context:
     now: Callable[[], datetime] = utc_now
     caller_umask: int = 0o022
     starter: Starter = field(default_factory=lambda: start_drainer)
+    trace: Emit = quiet
     _config: Config | None = None
     _conn: sqlite3.Connection | None = None
     _sessions: SessionList | None = None
@@ -82,13 +84,18 @@ class Context:
             self.warnings += [] if warning in self.warnings else [warning]
             return False
 
+    def obstacle(self, route: Route | None, session: Session) -> str:
+        if route is None:
+            return f"bellhop has no route for {session.harness} sessions"
+        return why_not(route, session)
+
     def forget_bindings(self) -> None:
         self._bindings = None
 
     @property
     def wiring(self) -> Wiring:
         if self._wiring is None:
-            self._wiring = wire(self.env, lambda: self.config)
+            self._wiring = wire(self.env, lambda: self.config, self.trace)
         return self._wiring
 
     @property

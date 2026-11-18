@@ -10,11 +10,21 @@ import pytest
 
 from bellhop.config import AgentConfig, Config
 from bellhop.errors import BellhopError
-from bellhop.models import Binding
+from bellhop.models import Binding, PushResult, Session
 from bellhop.routes import endpoint_routes
 from bellhop.routes.codex import CONTROL_SOCKET, CodexRoute
 from bellhop.routes.endpoint import Pongs
-from bellhop.wiring import endpoint_transcript, fake_routes, pi_agent_dir, session_homes, wire
+from bellhop.routes.fake import FakeRoute
+from bellhop.transcripts import PlainTranscripts
+from bellhop.wiring import (
+    TracedReader,
+    TracedRoute,
+    endpoint_transcript,
+    fake_routes,
+    pi_agent_dir,
+    session_homes,
+    wire,
+)
 from conftest import NOW, make_session, pong_line
 
 
@@ -199,3 +209,116 @@ def test_fake_routes_are_ignored_through_a_link_to_the_real_state_dir(tmp_path: 
     }
 
     assert fake_routes(env) is None
+
+
+class Recorder:
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict[str, object]]] = []
+
+    def __call__(self, event: str, /, **fields: object) -> None:
+        self.events.append((event, fields))
+
+
+def test_a_probe_is_recorded_once_until_its_answer_changes() -> None:
+    seen = Recorder()
+    probed: dict[str, tuple[bool, str | None]] = {}
+    session = make_session("s1")
+    down = TracedRoute(FakeRoute(is_reachable=False), seen, probed)
+
+    answers = [down.reachable(session), down.reachable(session)]
+    answers.append(TracedRoute(FakeRoute(), seen, probed).reachable(session))
+
+    assert answers == [False, False, True]
+    assert [(fields["reachable"], fields["reason"]) for _, fields in seen.events] == [
+        (False, "the fake route is set unreachable"),
+        (True, None),
+    ]
+
+
+def test_a_push_is_recorded_with_its_message_and_outcome() -> None:
+    seen = Recorder()
+    route = TracedRoute(FakeRoute(outcomes=["busy"]), seen, {}, clock=lambda: 5.0)
+
+    result = route.push(make_session("s1"), "[bellhop bh_abc from enki] hi", interrupt=True)
+
+    assert result.outcome == "busy"
+    assert seen.events == [
+        (
+            "push",
+            {
+                "message": "bh_abc",
+                "session": "s1",
+                "harness": "claude",
+                "route": "fake",
+                "interrupt": True,
+                "phase": "idle",
+                "outcome": "busy",
+                "detail": "fake busy",
+                "ms": 0,
+            },
+        )
+    ]
+
+
+def test_a_push_that_raises_is_recorded_and_still_raises() -> None:
+    class Broken(FakeRoute):
+        def push(self, session: Session, text: str, *, interrupt: bool) -> PushResult:
+            raise OSError("socket gone")
+
+    seen = Recorder()
+
+    with pytest.raises(OSError, match="socket gone"):
+        TracedRoute(Broken(), seen, {}).push(make_session("s1"), "x", interrupt=False)
+
+    assert [(event, fields["outcome"], fields["detail"]) for event, fields in seen.events] == [
+        ("push", "raised", "OSError: socket gone")
+    ]
+
+
+def test_a_transcript_is_recorded_only_when_it_shows_the_message(tmp_path: Path) -> None:
+    seen = Recorder()
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text("[bellhop bh_abc from enki] hi\n")
+    session = make_session("s1", transcript_path=transcript)
+    reader = TracedReader(PlainTranscripts(), seen)
+
+    found = [
+        reader.contains(session, "[bellhop bh_zzz from", since=0),
+        reader.contains(session, "[bellhop bh_abc from", since=0),
+    ]
+
+    assert found == [False, True]
+    assert seen.events == [
+        (
+            "seen",
+            {
+                "message": "bh_abc",
+                "session": "s1",
+                "harness": "claude",
+                "transcript": str(transcript),
+            },
+        )
+    ]
+    assert (reader.path(session), reader.size(session)) == (transcript, 30)
+
+
+def test_wiring_with_a_tracer_records_what_its_routes_do(tmp_path: Path) -> None:
+    seen = Recorder()
+    routes = tmp_path / "routes.json"
+    routes.write_text('{"default": {"reachable": false}}')
+    env = {"BELLHOP_FAKE_ROUTES": str(routes), "XDG_STATE_HOME": str(tmp_path / "state")}
+    wiring = wire(env, lambda: Config(Path("/c")), seen)
+    session = make_session("s1")
+
+    route = wiring.routes(session, None)
+    reader = wiring.readers(session, None)
+
+    assert route is not None and reader is not None
+    assert (route.name, route.can_interrupt, route.queues_until_idle) == ("fake", True, True)
+    assert (route.reachable(session), route.replaced(session), route.busy(session)) == (
+        False,
+        False,
+        None,
+    )
+    assert route.obstacle(session) == "the fake route is set unreachable"
+    assert [event for event, _ in seen.events] == ["probe"]

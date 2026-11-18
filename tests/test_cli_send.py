@@ -151,7 +151,7 @@ def test_no_route_is_exit_4_and_stores_nothing(bell: Bell) -> None:
     assert code == 4
     assert payload["error"] == {
         "code": "no_route",
-        "message": "no usable route to 'alpha' (claude)",
+        "message": "no usable route to 'alpha' (claude); bellhop has no route for claude sessions",
     }
     assert bell.stored() == []
     check_golden("send-no-route", payload)

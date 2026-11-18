@@ -45,10 +45,25 @@ bellhop integration export pi --to ~/.pi/agent/extensions
 Pi loads it at start (`/reload` in a running Pi). Export it again after upgrading bellhop.
 hooklinesinker lists a Pi session only when Pi runs as an executable named `pi`.
 
-**Codex.** Nothing to install. bellhop reaches a Codex session through the app server it is
-attached to: the shared daemon that a plain `codex` starts, found under `$CODEX_HOME` (default
-`~/.codex`). A `codex --no-daemon` session has no route; see
-[the Codex daemon note](../handoff/codex-daemon.md).
+**Codex.** Nothing to install, but start Codex through bellhop:
+
+```sh
+bellhop codex
+bellhop codex resume --last
+```
+
+Every argument goes to `codex` unchanged. `bellhop codex` starts an app server for that session on
+a socket in bellhop's runtime directory, attaches the Codex terminal UI to it, and stops it when
+you quit. A subcommand other than `resume` and `fork` (`exec`, `login`, …) and a Codex that cannot
+use an app server of bellhop's (`--remote`, `--no-daemon`, `--oss`, `--profile`) run as plain
+`codex`. If the app server cannot start, bellhop says so and starts plain `codex`: the session
+works but cannot be reached.
+
+A plain `codex` is reachable only while it is attached to Codex's shared daemon under
+`$CODEX_HOME` (default `~/.codex`). Codex 0.167.1 does not attach when it is started with
+`--no-daemon`, `--profile`, `--oss`, `--search` or a `-c` override other than a feature switch; it
+then says "Running without the shared background server" and has no route. See
+[ADR 0007](../decisions/0007-codex-session-servers.md).
 
 ## 4. Check
 
@@ -80,6 +95,26 @@ Give agents the [bellhop skill](../../skills/bellhop/SKILL.md) so they know how 
 read messages (`bellhop integration export skill --to <skills dir>` writes
 `<skills dir>/bellhop/SKILL.md`), and add `bellhop inbox` to each agent's allowed commands.
 
+## 6. See what happened
+
+bellhop keeps a trace of what it did: every command with its result, every push with the
+receiver's answer, why a session could not be reached, and what the drainer, the Claude relay and
+`bellhop codex` did.
+
+```sh
+bellhop log
+bellhop log bh_1f0c9a2b7e44
+bellhop log no_route -n 10
+bellhop log --errors
+```
+
+`bellhop log` prints the last 40 events; each TEXT keeps only the events that contain it (a
+message id, a session id, an event name, an error code). `--errors` keeps only what went wrong: a
+command that failed, a push the receiver refused or did not answer, a message that failed, and
+what the drainer or `bellhop codex` could not do. The trace records command lines,
+including a message given as an argument, cut at 300 characters. `BELLHOP_TRACE=off` in a
+command's environment stops that command from writing to it.
+
 ## Where things live
 
 | What | Where |
@@ -88,5 +123,6 @@ read messages (`bellhop integration export skill --to <skills dir>` writes
 | Agents and settings | `$XDG_CONFIG_HOME/bellhop/config.toml` ([Agents](agents.md)) |
 | Endpoint sockets | `$BELLHOP_RUNTIME_DIR`, else `runtime_dir` in the config, else `/tmp/bellhop-<uid>` (mode 0700) |
 | Background drainer log | `$XDG_STATE_HOME/bellhop/drain.log` |
+| Trace of what bellhop did | `$XDG_STATE_HOME/bellhop/trace.jsonl` (4 MiB, then one older file `trace.jsonl.1`) |
 
 Messages are unauthenticated: everything runs as one user and sender names are self-asserted.

@@ -4,6 +4,6 @@
   "exit_code": 4,
   "error": {
     "code": "no_route",
-    "message": "no usable route to 'alpha' (claude)"
+    "message": "no usable route to 'alpha' (claude); bellhop has no route for claude sessions"
   }
 }

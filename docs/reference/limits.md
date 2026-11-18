@@ -62,8 +62,22 @@ What bellhop does not do, or does only partly, and what you see when you hit it.
 
 ## Codex
 
-- **`codex --no-daemon` sessions have no route.** Only a Codex attached to an app server (the
-  shared daemon, or the per-session server `bellhop launch` starts) can be reached.
+- **Only a Codex whose app server bellhop can find has a route.** That is a session started with
+  `bellhop codex` or `bellhop launch`, or a plain `codex` attached to the shared daemon. A plain
+  `codex` started with `--no-daemon`, `--profile`, `--oss`, `--search` or a `-c` override other
+  than a feature switch runs a private app server (Codex 0.167.1 warns "Running without the shared
+  background server") and has no route. `bellhop sessions --json` gives the `reason`.
+- **`bellhop codex` gives the app server only the `-c`, `--enable` and `--disable` arguments.**
+  Everything else reaches the session through the terminal UI. Measured on Codex 0.167.1: `-c
+  sandbox_mode`, `-c model_reasoning_effort` and `-s read-only` took effect in the session.
+- **An app server outlives a `bellhop codex` that is killed with SIGKILL.** A normal quit, SIGTERM
+  and a closed terminal stop it (SIGTERM and SIGHUP are passed on to Codex, which then quits);
+  after SIGKILL the session keeps working and stays reachable until you quit Codex, and then the
+  `codex app-server` process is yours to stop. `bellhop doctor --prune` removes the link a dead one
+  left.
+- **A thread loaded in two app servers is reached on the session's own.** After `bellhop codex
+  resume` of a thread the shared daemon still has loaded, the message goes to the server the
+  terminal UI is attached to.
 - **A Codex thread whose TUI has quit stays loaded in the app server.** A message to it starts a
   turn that nobody is watching.
 - **hooklinesinker lists a Codex thread only after its first turn**, so a Codex agent can be

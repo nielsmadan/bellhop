@@ -13,12 +13,14 @@ from pathlib import Path
 from bellhop.cli.context import Context
 from bellhop.cli.presentation import escape_controls, print_json, print_lines, print_warnings
 from bellhop.codes import DOCTOR_FAILED
+from bellhop.codex_session import remove_socket
 from bellhop.drain import drainer_running, lock_owner, read_status
 from bellhop.errors import BellhopError
 from bellhop.jsonout import check_object, ok_payload
 from bellhop.models import FAKE_ROUTES_ENV, Harness
 from bellhop.paths import state_dir
 from bellhop.routes import ENDPOINTS
+from bellhop.routes.codex import SESSION_SOCKETS
 from bellhop.routes.endpoint import PING_SECONDS, EndpointKind
 from bellhop.routes.unix import SOCKET_PATH_LIMIT, WIRE, Pong, endpoint_path, ping
 from bellhop.runtime import PRIVATE_MODE, resolve_runtime_dir
@@ -62,7 +64,8 @@ def socket_inode(path: Path) -> int | None:
         info = path.lstat()
     except OSError:
         return None
-    return info.st_ino if stat.S_ISSOCK(info.st_mode) else None
+    linked = stat.S_ISLNK(info.st_mode) and path.match(SESSION_SOCKETS)
+    return info.st_ino if stat.S_ISSOCK(info.st_mode) or linked else None
 
 
 @contextmanager
@@ -104,7 +107,10 @@ def dead_sockets(runtime: Path) -> dict[Path, int]:
 def remove_if_unchanged(path: Path, inode: int) -> bool:
     if socket_inode(path) != inode:
         return False
-    path.unlink(missing_ok=True)
+    if path.is_symlink():
+        remove_socket(path, os.getuid())
+    else:
+        path.unlink(missing_ok=True)
     return True
 
 

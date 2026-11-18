@@ -9,12 +9,16 @@ that would fix it. None is applied; bellhop works around each as described in
 
 **Evidence.** hls maps a title only for Claude, Kimi and Pi (`session_title` in the hook
 payload). Its Codex mapping sets model, permission mode and the interrupt problem, and no title
-(`src/normalize.rs`, the `Agent::Codex => Details { … }` arm). `bellhop sessions` therefore shows
-an empty title for every Codex session, and a Codex session cannot be addressed by title.
+(`src/normalize.rs`, the `Agent::Codex => Details { … }` arm), so `hooklinesinker sessions --json`
+has no title for any Codex session. Codex does keep one: every generated name and every `/rename`
+is appended to `$CODEX_HOME/session_index.jsonl` as `{"id", "thread_name", "updated_at"}`, and the
+last line for an id wins (`codex-rs/rollout/src/session_index.rs`, Codex 0.167.1).
 
-**Smallest change.** When a Codex `UserPromptSubmit` arrives for a session that has no title yet,
-set the title to the prompt's first line, trimmed to a short length (Codex's own app server calls
-this the thread's `preview`). Later prompts keep it.
+**What bellhop does meanwhile.** It reads that file itself and uses the name as the title of a
+Codex session hls reports without one.
+
+**Smallest change.** Have hls fill a Codex session's title from the same file, so every reader of
+`sessions --json` gets it.
 
 ## 2. Pi sessions not started as an executable named `pi` are dropped
 

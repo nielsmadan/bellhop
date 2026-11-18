@@ -58,9 +58,16 @@ extension and Claude's MCP config.
 - `files` (layer 0): `open_private` (no symlink, no blocking, then refused unless a regular file of
   the user's with one link), `read_private`, `write_private` (a fresh exclusive temporary file,
   then `os.replace`) and `drop_planted`. bellhop writes `bellhop.sqlite`, `drain.lock`,
-  `drain.log`, `drain.status.json` and `codex-<agent>.log` through them; the launch and relay locks
-  are only locked. The drainer contacts only the tmux server `config.toml` names
+  `drain.log`, `drain.status.json`, `trace.jsonl` and `codex-<agent>.log` through them; the launch
+  and relay locks are only locked. The drainer contacts only the tmux server `config.toml` names
   (`tmux.configured_server`) and runs tmux from its own `PATH` or `tmux.SYSTEM_TMUX`.
+- `trace`: the append-only `trace.jsonl` in the state dir (`tracer(env, source)` gives an `Emit`;
+  4 MiB, then one `.1` file; `BELLHOP_TRACE=off` gives `quiet`). An emit never raises. `bellhop log`
+  reads it. `wiring.TracedRoute` and `TracedReader` record every probe whose answer changed, every
+  push and every transcript confirmation for the CLI and the drainer; `cli/command` records each
+  command (not `log`), `sessions` one summary through the untraced finder (`Wiring.untraced`), and
+  the drainer, the relay and `bellhop codex` their own starts, stops and errors.
+  [ADR 0007](docs/decisions/0007-codex-session-servers.md).
 - `identity`, `targets`: the calling session (`whoami`) and target resolution; bindings follow
   their process.
 - `envelope`, `routes`, `transcripts`, `delivery`: the text a session receives, the `Route` and
@@ -82,7 +89,12 @@ extension and Claude's MCP config.
   `app_server_socket` (recorded by `bind` from the binding session's `CODEX_HOME`, or by `launch`
   for the agent's own server), else `$CODEX_HOME/app-server-control/app-server-control.sock` (the
   shared daemon; `CODEX_HOME` from a configured agent's `env`, else from the session's transcript path, via `wiring.homes_env`), followed only to a
-  socket the user owns in a private directory. `now` steers a running turn (`turn/steer`, ADR
+  socket the user owns in a private directory. It also asks every `codex-*.sock` in the runtime
+  directory that links into `codex-daemon-<uid>` (the servers `bellhop codex` and `launch` start),
+  listed only when a route is used; the server that has the thread loaded is the session's
+  (`CodexRoute.home`: a launched agent's own first, then the runtime directory's, then the daemon). Every route has
+  `obstacle(session)`, the reason a session is unreachable, shown as `reason` in `sessions --json`
+  and at the end of a `no_route` error. `now` steers a running turn (`turn/steer`, ADR
   0004); a thread waiting on an approval or a question is busy for every push. `transcripts/codex` finds the rollout by `rollout-*-<thread-id>.jsonl` under
   `$CODEX_HOME/sessions`, only in the thread's UUIDv7 creation day and the days either side. A Codex binding is keyed by its
   thread: it fails while hls does not list the thread (or the app-server pid hls reports is gone)
@@ -99,7 +111,11 @@ extension and Claude's MCP config.
   through `readiness`, hls listing and the route; a Codex thread through its own app server's
   `thread/read` preview). `tmux` talks only to the configured server and never reuses a session
   name. `codex_session` is `bellhop _codex_session`, which runs a Codex app server and TUI and
-  stops the server when the TUI exits. `readiness` mirrors `testing/screens` and is pinned to it
+  stops the server when the TUI exits; `cli/codex` is the public `bellhop codex`, which does the
+  same for a hand-started session (socket `codex-<pid>.sock`, the caller's `-c`, `--enable` and
+  `--disable` to the server, every argument to the TUI) and falls back to plain `codex` when it
+  cannot (`cli/__init__` hands it the arguments before any parsing). Both pass SIGTERM and SIGHUP
+  on to the TUI and wait for it. `readiness` mirrors `testing/screens` and is pinned to it
   by a parity test. `cli/waking` holds the CLI side; `store.begin_start`, `finish_start` and
   `fail_start` change the binding and the first message (route `launch`) together.
 - `_integrations/pi/bellhop.ts`: the Pi extension, shipped in the wheel. `bellhop integration
@@ -128,7 +144,7 @@ extension and Claude's MCP config.
   `follow_bindings` updates bindings in one write transaction for the drainer and the CLI.
 - `cli`: `parsing`, `presentation`, `context` (lazy config, store, sessions, process table,
   bindings; reading them starts nothing) and one module per command family (`messages`,
-  `launching`, `info`, `integration`, `doctor`), wired in `dispatch`; `command` parses and reports
+  `launching`, `info`, `integration`, `doctor`, `log`), wired in `dispatch`; `command` parses and reports
   errors. `cli/__init__.py` holds only `main`, which imports lazily so `_relay`, `_drain` and
   `_codex_session` start without loading the command modules. `dispatch` starts the
   drainer (at most once per command, and not before `doctor`, which checks for it itself) before

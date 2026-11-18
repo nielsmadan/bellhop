@@ -18,6 +18,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         from bellhop.codex_session import main as codex_session_main
 
         return codex_session_main(arguments[1:], os.environ, caller_umask)
+    if arguments[:1] == ["codex"]:
+        from bellhop.cli.codex import main as codex_main
+
+        return codex_main(arguments[1:], os.environ, caller_umask)
     from bellhop.cli.command import run_command
 
     return run_command(arguments, caller_umask)

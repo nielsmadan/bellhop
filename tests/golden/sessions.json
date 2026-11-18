@@ -13,6 +13,7 @@
       "agent": "enki",
       "reachable": true,
       "route": "fake",
+      "reason": null,
       "pending": 1
     },
     {
@@ -25,6 +26,7 @@
       "agent": null,
       "reachable": false,
       "route": null,
+      "reason": "bellhop has no route for codex sessions",
       "pending": 0
     },
     {
@@ -37,6 +39,7 @@
       "agent": null,
       "reachable": true,
       "route": "fake",
+      "reason": null,
       "pending": 0
     },
     {
@@ -49,6 +52,7 @@
       "agent": null,
       "reachable": true,
       "route": "fake",
+      "reason": null,
       "pending": 0
     }
   ]

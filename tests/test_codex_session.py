@@ -247,3 +247,45 @@ def test_the_server_log_replaces_a_planted_link_and_leaves_its_target(tmp_path: 
     os.close(server_log(log))
 
     assert (target.read_text(), log.is_symlink()) == ("mine\n", False)
+
+
+TRAPPING_TUI = """
+import signal, sys, time
+marker, caught = sys.argv[1:3]
+def leave(signum, frame):
+    open(caught, "w").write(str(signum))
+    sys.exit(0)
+signal.signal(signal.SIGTERM, leave)
+open(marker, "w").close()
+time.sleep(60)
+"""
+
+
+def test_a_termination_reaches_the_tui_so_it_can_leave_by_itself(tmp_path: Path) -> None:
+    marker, caught = tmp_path / "tui-started", tmp_path / "tui-caught"
+    tui = [sys.executable, "-c", TRAPPING_TUI, str(marker), str(caught)]
+    argv, link, _, pidfile = wrapper(tmp_path, SERVER, tui)
+    process = subprocess.Popen(argv, env=env(tmp_path), process_group=0)
+    if not started(marker, process):
+        os.killpg(process.pid, signal.SIGKILL)
+        process.wait(10)
+        pytest.fail("the wrapper never became ready")
+
+    process.send_signal(signal.SIGTERM)
+    code = process.wait(10)
+
+    assert caught.read_text() == str(int(signal.SIGTERM))
+    assert (code, gone(int(pidfile.read_text())), link.is_symlink()) == (
+        128 + signal.SIGTERM,
+        True,
+        False,
+    )
+
+
+def test_a_tui_killed_by_a_signal_gives_the_shell_s_exit_code(tmp_path: Path) -> None:
+    tui = [sys.executable, "-c", "import os, signal; os.kill(os.getpid(), signal.SIGKILL)"]
+    argv, _, _, _ = wrapper(tmp_path, SERVER, tui)
+
+    code = subprocess.run(argv, env=env(tmp_path), timeout=30, check=False).returncode
+
+    assert code == 128 + signal.SIGKILL

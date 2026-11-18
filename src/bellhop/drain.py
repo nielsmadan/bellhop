@@ -41,6 +41,7 @@ from bellhop.store import (
 )
 from bellhop.targets import binding_for, follows_processes, live_session, refresh_bindings
 from bellhop.tmux import Tmux, configured_server, tmux_for
+from bellhop.trace import Emit, quiet, tracer
 from bellhop.transcripts import ReaderFinder
 from bellhop.wiring import wire
 
@@ -108,6 +109,7 @@ class Deps:
     now: Callable[[], datetime]
     sleep: Callable[[float], None]
     starts: StartCheck = no_starts
+    trace: Emit = quiet
 
 
 class Pushed(NamedTuple):
@@ -196,7 +198,9 @@ def _drain_target(deps: Deps, state: State, target: tuple[TargetKind, str], view
     route = deps.routes(session, binding) if session is not None else None
     detail = ended(deps, state, name, view, route) if kind == "session" else None
     if detail is not None:
-        fail_pending(deps.conn, kind, name, detail, view.now)
+        failed = fail_pending(deps.conn, kind, name, detail, view.now)
+        if failed:
+            deps.trace("fail", target=name, kind=kind, detail=detail, messages=failed)
         return
     message = oldest_pending(deps.conn, kind, name)
     if session is None or message is None or paced(session, state, view.now):
@@ -210,10 +214,13 @@ def _drain_target(deps: Deps, state: State, target: tuple[TargetKind, str], view
     state.pushed[session.session_id] = Pushed(view.now, session.observed_at)
 
 
-def _report(state: State, target: tuple[TargetKind, str], error: Exception) -> None:
+def _report(
+    state: State, target: tuple[TargetKind, str], error: Exception, trace: Emit = quiet
+) -> None:
     text = f"{type(error).__name__}: {error}"
     if state.errors.get(target) != text:
         print(f"bellhop: drainer: {target[0]} {target[1]}: {text}", file=sys.stderr, flush=True)
+        trace("error", target=target[1], kind=target[0], error=text)
     state.errors[target] = text
 
 
@@ -242,7 +249,7 @@ def _complete_start(
     try:
         progress = deps.starts(binding, sessions, now)
     except Exception as error:  # noqa: BLE001
-        _report(state, ("agent", binding.agent), error)
+        _report(state, ("agent", binding.agent), error, deps.trace)
         if not expired(binding, now):
             return
         reason = f"not ready after {STARTUP.seconds}s ({type(error).__name__}: {error})"
@@ -261,7 +268,7 @@ def _complete_starts(
         try:
             _complete_start(deps, state, binding, sessions, now)
         except Exception as error:  # noqa: BLE001
-            _report(state, ("agent", binding.agent), error)
+            _report(state, ("agent", binding.agent), error, deps.trace)
     abandon_starts(deps.conn, now)
 
 
@@ -320,7 +327,7 @@ def tick(deps: Deps, state: State) -> None:
         try:
             _drain_target(deps, state, target, view)
         except Exception as error:  # noqa: BLE001
-            _report(state, target, error)
+            _report(state, target, error, deps.trace)
     started = {("agent", b.agent) for b in current if b.state == "starting"}
     state.errors = {
         target: text
@@ -356,6 +363,8 @@ def run(deps: Deps, lock: Lock) -> int:
             state.failures += 1
             delay = backoff(state.failures)
             print(f"bellhop: drainer: {error}; retrying in {delay:g}s", file=sys.stderr, flush=True)
+            if state.failures == 1:
+                deps.trace("hls", error=str(error))
         deps.sleep(delay)
 
 
@@ -531,7 +540,8 @@ def main(env: Mapping[str, str]) -> int:
     write_status(status_path(env), status)
     conn = open_store(state_dir(env))
     config = watched_config(env, on_error=keeping_config)
-    wiring = wire(env, config)
+    trace = tracer(env, "drain")
+    wiring = wire(env, config, trace)
     deps = Deps(
         conn=conn,
         sessions=reporting_sessions(env, status_path(env), status),
@@ -541,11 +551,16 @@ def main(env: Mapping[str, str]) -> int:
         now=lambda: datetime.now(UTC),
         sleep=time.sleep,
         starts=drainer_starts(conn, wiring.routes, env, config),
+        trace=trace,
     )
+    trace("start")
     try:
-        return run(deps, lock)
-    except Exception:  # noqa: BLE001
+        code = run(deps, lock)
+        trace("exit", exit=code)
+        return code
+    except Exception as error:  # noqa: BLE001
         traceback.print_exc()
+        trace("exit", exit=1, error=f"{type(error).__name__}: {error}")
         return 1
     finally:
         conn.close()

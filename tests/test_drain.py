@@ -656,6 +656,28 @@ def test_the_route_gets_the_binding_of_the_session_it_delivers_to(world: World) 
     assert pushed_bodies(world) == ["body 1"]
 
 
+def test_failing_a_gone_sessions_messages_is_traced(world: World) -> None:
+    insert_message(world.conn, make_message(1))
+    world.route = FakeRoute(is_reachable=False, is_replaced=True)
+    seen: list[tuple[str, dict[str, object]]] = []
+
+    tick(
+        replace(world.deps, trace=lambda event, /, **fields: seen.append((event, fields))), State()
+    )
+
+    assert seen == [
+        (
+            "fail",
+            {
+                "target": "s1",
+                "kind": "session",
+                "detail": "session replaced in its process",
+                "messages": 1,
+            },
+        )
+    ]
+
+
 def test_a_replaced_session_fails_its_messages_and_an_agent_waits(world: World) -> None:
     to_session = insert_message(world.conn, make_message(1))
     to_agent = insert_message(world.conn, make_message(2, target_kind="agent", target="enki"))

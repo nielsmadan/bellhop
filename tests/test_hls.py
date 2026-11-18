@@ -88,7 +88,10 @@ def test_hls_problems_become_warnings(fake_hls: FakeHls) -> None:
         problems=[{"observedAt": "2026-11-13T09:00:00Z", "message": "sink unreachable"}, "plain"],
     )
 
-    assert list_sessions(os.environ).warnings == ("sink unreachable", "plain")
+    assert list_sessions(os.environ).warnings == (
+        "hooklinesinker reports: sink unreachable",
+        "hooklinesinker reports: plain",
+    )
 
 
 def test_unrecognized_records_are_skipped_with_a_warning(fake_hls: FakeHls) -> None:
@@ -286,7 +289,7 @@ def test_a_problem_without_a_message_is_shown_as_json(fake_hls: FakeHls) -> None
     fake_hls.respond([], problems=[{"observedAt": "2026-11-13T09:00:00Z", "code": 7}])
 
     assert list_sessions(os.environ).warnings == (
-        '{"observedAt": "2026-11-13T09:00:00Z", "code": 7}',
+        'hooklinesinker reports: {"observedAt": "2026-11-13T09:00:00Z", "code": 7}',
     )
 
 

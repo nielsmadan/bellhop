@@ -1,11 +1,13 @@
+import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
+from bellhop.errors import BellhopError
 from bellhop.models import Binding, Harness, PushResult, Session
 from bellhop.routes.claude import NAME as CLAUDE_NAME
-from bellhop.routes.codex import CodexRoute, Probes, codex_socket
+from bellhop.routes.codex import SESSION_SOCKETS, CodexRoute, Probes, daemon_socket
 from bellhop.routes.endpoint import EndpointKind, EndpointRoute, Pongs
 from bellhop.routes.fake import fake_finder
 from bellhop.routes.pi import NAME as PI_NAME
@@ -23,6 +25,8 @@ class Route(Protocol):
     def queues_until_idle(self) -> bool: ...
 
     def reachable(self, session: Session) -> bool: ...
+
+    def obstacle(self, session: Session) -> str: ...
 
     def replaced(self, session: Session) -> bool: ...
 
@@ -50,18 +54,38 @@ ENDPOINTS: Mapping[Harness, EndpointKind] = {
         "extension",
         "export the integration again: bellhop integration export pi --to <dir>",
         UNLISTED_PI,
+        setup="install the pi extension (`bellhop integration show pi`) and restart pi",
     ),
     "claude": EndpointKind(
-        CLAUDE_NAME, "relay", "restart that claude so it starts the installed bellhop's relay"
+        CLAUDE_NAME,
+        "relay",
+        "restart that claude so it starts the installed bellhop's relay",
+        setup="start claude with bellhop's MCP config (`bellhop integration show claude`)",
     ),
 }
 
 
 def endpoint_routes(runtime_dir: Callable[[], Path], pongs: Pongs) -> dict[str, EndpointRoute]:
     return {
-        harness: EndpointRoute(harness, kind.route, runtime_dir, pongs)
+        harness: EndpointRoute(harness, kind.route, runtime_dir, pongs, kind)
         for harness, kind in ENDPOINTS.items()
     }
+
+
+def codex_link(path: Path, uid: int) -> bool:
+    try:
+        return Path(os.readlink(path)).parent.name == f"codex-daemon-{uid}"
+    except OSError:
+        return False
+
+
+def session_sockets(runtime_dir: Callable[[], Path]) -> tuple[Path, ...]:
+    try:
+        found = sorted(runtime_dir().glob(SESSION_SOCKETS))
+    except (BellhopError, OSError):
+        return ()
+    uid = os.getuid()
+    return tuple(path for path in found if codex_link(path, uid))
 
 
 def route_finder(setup: RouteSetup) -> RouteFinder:
@@ -74,8 +98,12 @@ def route_finder(setup: RouteSetup) -> RouteFinder:
         if session.harness in endpoints:
             return endpoints[session.harness]
         if session.harness == "codex":
-            home = setup.codex_home(session, binding)
-            return CodexRoute(codex_socket(binding, home), setup.codex_probes)
+            known = (
+                Path(binding.app_server_socket)
+                if binding is not None and binding.app_server_socket
+                else daemon_socket(setup.codex_home(session, binding))
+            )
+            return CodexRoute(known, setup.codex_probes, lambda: session_sockets(setup.runtime_dir))
         return None
 
     return find

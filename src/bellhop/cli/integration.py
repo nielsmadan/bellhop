@@ -93,10 +93,20 @@ CODEX_LINES = [
         "it is attached to."
     ),
     (
-        "a plain `codex` attaches to the shared daemon under $CODEX_HOME (default ~/.codex); "
-        "`bellhop launch` starts its own app server for a configured agent."
+        "start codex with `bellhop codex [CODEX ARGUMENTS...]`: it runs an app server for that "
+        "session on a socket in bellhop's runtime directory and attaches the codex terminal UI "
+        "to it; every argument goes to codex unchanged."
     ),
-    "a `codex --no-daemon` session has no app server bellhop can reach, so it has no route.",
+    (
+        "a plain `codex` is reachable only when it attaches to the shared daemon under "
+        "$CODEX_HOME (default ~/.codex); `bellhop launch` starts its own app server for a "
+        "configured agent."
+    ),
+    (
+        "a plain `codex` started with --no-daemon, --profile, --oss, --search or a -c override "
+        "other than a feature switch runs a private app server bellhop cannot reach, so it has "
+        "no route."
+    ),
 ]
 
 

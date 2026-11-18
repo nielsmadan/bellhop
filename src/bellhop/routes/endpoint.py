@@ -16,6 +16,7 @@ class EndpointKind:
     piece: str
     old_wire: str
     unlisted: str | None = None
+    setup: str = ""
 
 
 def serves(pong: Pong | None, session: Session) -> bool:
@@ -51,6 +52,7 @@ class EndpointRoute:
     name: str
     runtime_dir: Callable[[], Path]
     pongs: Pongs = field(default_factory=Pongs, compare=False)
+    kind: EndpointKind | None = field(default=None, compare=False)
     can_interrupt: bool = field(default=True, init=False)
     queues_until_idle: bool = field(default=True, init=False)
 
@@ -65,6 +67,22 @@ class EndpointRoute:
 
     def reachable(self, session: Session) -> bool:
         return serves(self.pong(session), session)
+
+    def obstacle(self, session: Session) -> str:
+        path = self.socket(session)
+        piece = self.kind.piece if self.kind is not None else "endpoint"
+        if path is None:
+            return f"hooklinesinker reports no pid for this {self.harness} session"
+        if not path.exists():
+            setup = f"; {self.kind.setup}" if self.kind is not None and self.kind.setup else ""
+            return f"no bellhop {piece} listens at {path}{setup}"
+        pong = self.pongs.ask(path)
+        if pong is None:
+            return f"the {piece} at {path} does not answer"
+        if not pong.current:
+            fix = f"; {self.kind.old_wire}" if self.kind is not None else ""
+            return f"the {piece} at {path} speaks another wire version{fix}"
+        return f"the {piece} at {path} serves session {pong.session or 'none'}"
 
     def replaced(self, session: Session) -> bool:
         return replaced_by(self.pong(session), session)
