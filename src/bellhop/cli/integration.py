@@ -12,6 +12,13 @@ from bellhop.cli.presentation import print_json, print_lines, print_warnings
 from bellhop.codes import EXPORT_FAILED, USAGE
 from bellhop.errors import BellhopError
 from bellhop.jsonout import integration_object, ok_payload
+from bellhop.routes.claude import (
+    CONFIG_DIR_ENV,
+    DEFAULT_CONFIG_DIR,
+    INBOUND_ACCEPT,
+    INBOUND_SETTING,
+    SOCKET_ROUTE,
+)
 from bellhop.routes.pi import UNLISTED_PI
 from bellhop.wiring import pi_agent_dir
 
@@ -54,6 +61,14 @@ def claude_lines(source: Path, target: Path | None) -> list[str]:
         (
             "bellhop must be on the PATH Claude starts MCP servers with; a running session keeps "
             "the relay it started with until it is restarted."
+        ),
+        (
+            f'without the relay: set "{INBOUND_SETTING}": "{INBOUND_ACCEPT}" in Claude\'s user '
+            f"settings (~/{DEFAULT_CONFIG_DIR}/settings.json, or settings.json in "
+            f"${CONFIG_DIR_ENV}). bellhop then writes to the session's messaging socket itself "
+            f"(route {SOCKET_ROUTE}). "
+            "With that setting Claude delivers a message from any process running as you without "
+            "holding it for review."
         ),
         "bellhop never edits Claude's configuration.",
     ]

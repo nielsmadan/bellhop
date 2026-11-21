@@ -8,6 +8,7 @@ import socket
 import sys
 import tempfile
 import threading
+import time
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
@@ -124,6 +125,7 @@ def isolated_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Ite
     monkeypatch.delenv("BELLHOP_FAKE_ROUTES", raising=False)
     monkeypatch.delenv("PI_CODING_AGENT_DIR", raising=False)
     monkeypatch.delenv("CODEX_HOME", raising=False)
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     monkeypatch.delenv("PI_CODING_AGENT_SESSION_DIR", raising=False)
     for name in (
         "CLAUDE_CODE_SESSION_ID",
@@ -423,3 +425,54 @@ def pong_server(path: Path, reply: bytes) -> Iterator[None]:
         yield
     finally:
         server.close()
+
+
+@contextmanager
+def claude_peer(path: Path) -> Iterator[list[bytes]]:
+    received: list[bytes] = []
+    server = socket.socket(socket.AF_UNIX)
+    server.bind(str(path))
+    server.listen(4)
+
+    def accept() -> None:
+        with contextlib.suppress(OSError):
+            while True:
+                conn, _ = server.accept()
+                with conn:
+                    data = b""
+                    while chunk := conn.recv(65536):
+                        data += chunk
+                    received.append(data)
+
+    threading.Thread(target=accept, daemon=True).start()
+    try:
+        yield received
+    finally:
+        server.close()
+
+
+def peer_frames(received: list[bytes], seconds: float = 5.0) -> list[dict[str, object]]:
+    deadline = time.monotonic() + seconds
+    while not received and time.monotonic() < deadline:
+        time.sleep(0.02)
+    return [json.loads(line) for data in received for line in data.splitlines()]
+
+
+CLAUDE_SESSION = "c1a0de00-0000-4000-8000-00000000c1de"
+CLAUDE_PID = 4242
+
+
+def accepting_claude(
+    home: Path,
+    sock: Path,
+    *,
+    inbound: object = "accept",
+    session: object = CLAUDE_SESSION,
+    pid: int = CLAUDE_PID,
+) -> None:
+    sessions = home / "sessions"
+    home.mkdir(mode=0o700, exist_ok=True)
+    sessions.mkdir(mode=0o700, exist_ok=True)
+    (home / "settings.json").write_text(json.dumps({"crossSessionInbound": inbound}))
+    entry = {"pid": pid, "sessionId": session, "messagingSocketPath": str(sock)}
+    (sessions / f"{CLAUDE_PID}.json").write_text(json.dumps(entry))

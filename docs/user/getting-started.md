@@ -36,6 +36,20 @@ claude mcp add --scope user bellhop -- bellhop _relay
 it started with: restart it after installing or upgrading bellhop. `bellhop integration show
 claude` prints the same instructions and the packaged config file, for `claude --mcp-config`.
 
+Without the relay, bellhop can write to a Claude session's own messaging socket instead, when
+Claude's user settings (`~/.claude/settings.json`, or `$CLAUDE_CONFIG_DIR/settings.json`) say:
+
+```json
+{ "crossSessionInbound": "accept" }
+```
+
+bellhop reads that file to decide, so the setting has to be there and not only in a `--settings`
+flag or a managed policy. It uses the socket only when the config directory, its `sessions`
+directory and the socket's directory are yours and not writable by anyone else. Such a session shows the route `claude-socket` in `bellhop sessions --json`; a
+session whose relay answers keeps `claude-relay`. `accept` is Claude's own switch and is wider than
+bellhop: Claude then delivers a message from any process running as you, other Claude sessions
+included, without holding it for your review.
+
 **Pi.** Copy bellhop's extension to the directory Pi loads extensions from:
 
 ```sh
@@ -72,8 +86,8 @@ bellhop doctor
 bellhop sessions
 ```
 
-`doctor` checks hooklinesinker, the state and runtime directories, the store, and each live
-session's socket. `sessions` lists the live sessions bellhop can see, for example:
+`doctor` checks hooklinesinker, the state and runtime directories, the store, each answering
+relay and extension, and each Claude session that accepts peer messages. `sessions` lists the live sessions bellhop can see, for example:
 
 ```
 ID        HARNESS  PHASE    TITLE

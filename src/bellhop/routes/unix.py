@@ -77,7 +77,7 @@ def deliver_header(when: When, session_id: str, text: str) -> str:
 def remaining(deadline: float) -> float:
     left = deadline - time.monotonic()
     if left <= 0:
-        raise TimeoutError
+        raise TimeoutError("the deadline passed")
     return left
 
 

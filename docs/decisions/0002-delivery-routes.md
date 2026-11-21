@@ -22,7 +22,7 @@ that passes S2 mid-turn, else degrades to `idle`.
 
 | Harness | `idle` route | `now` route | Route name |
 |---|---|---|---|
-| Claude | MCP relay, frame `priority: "later"` | the same relay, frame `priority: "next"` | `claude-relay` |
+| Claude | MCP relay, frame `priority: "later"` | the same relay, frame `priority: "next"` | `claude-relay` (and `claude-socket`, added by [ADR 0008](0008-claude-socket.md)) |
 | Codex | the app server the session is attached to: wait until the thread is idle, then `turn/start` | degraded to `idle` (`degraded_from: "now"`) until S3b is measured (superseded by [ADR 0004](0004-codex-now.md): `turn/steer`) | `codex-app-server` |
 | Pi | extension, `sendUserMessage(text, { deliverAs: "followUp" })` | the same extension, `deliverAs: "steer"` | `pi-extension` |
 

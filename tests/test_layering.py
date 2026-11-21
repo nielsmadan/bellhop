@@ -157,7 +157,7 @@ SIBLING_IMPORTS_ALLOWED: Mapping[str, Mapping[str, frozenset[str]]] = {
         "unix": frozenset(),
         "endpoint": frozenset({"unix"}),
         "pi": frozenset(),
-        "claude": frozenset(),
+        "claude": frozenset({"unix"}),
         "codex": frozenset(),
         "__init__": frozenset({"claude", "codex", "endpoint", "fake", "pi"}),
     },

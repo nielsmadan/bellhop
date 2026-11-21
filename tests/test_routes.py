@@ -7,6 +7,7 @@ from pathlib import Path
 from bellhop.errors import BellhopError
 from bellhop.models import Binding
 from bellhop.routes import RouteSetup, route_finder, session_sockets
+from bellhop.routes.claude import ClaudeRoute
 from bellhop.routes.codex import CodexRoute
 from bellhop.routes.endpoint import EndpointRoute
 from bellhop.routes.fake import FakeRoute
@@ -33,12 +34,13 @@ def test_the_real_finder_routes_every_harness(tmp_path: Path, short_tmp: Path) -
     claude = find(make_session("c1", harness="claude", pid=22), None)
 
     assert isinstance(pi, EndpointRoute)
-    assert isinstance(claude, EndpointRoute)
+    assert isinstance(claude, ClaudeRoute)
+    assert isinstance(claude.relay, EndpointRoute)
     assert (pi.name, pi.socket(make_session("p1", harness="pi", pid=11))) == (
         "pi-extension",
         short_tmp / "pi-11.sock",
     )
-    assert (claude.name, claude.socket(make_session("c1", harness="claude", pid=22))) == (
+    assert (claude.name, claude.relay.socket(make_session("c1", harness="claude", pid=22))) == (
         "claude-relay",
         short_tmp / "claude-22.sock",
     )

@@ -20,11 +20,13 @@ from bellhop.jsonout import check_object, ok_payload
 from bellhop.models import FAKE_ROUTES_ENV, Harness
 from bellhop.paths import state_dir
 from bellhop.routes import ENDPOINTS
+from bellhop.routes.claude import SOCKET_ROUTE, ClaudeRoute
 from bellhop.routes.codex import SESSION_SOCKETS
 from bellhop.routes.endpoint import PING_SECONDS, EndpointKind
 from bellhop.routes.unix import SOCKET_PATH_LIMIT, WIRE, Pong, endpoint_path, ping
 from bellhop.runtime import PRIVATE_MODE, resolve_runtime_dir
 from bellhop.store import SCHEMA_VERSION, orphaned, prune, schema_version
+from bellhop.targets import binding_for
 from bellhop.wiring import fake_routes
 
 PRUNE_AGE = timedelta(days=30)
@@ -165,6 +167,29 @@ def _endpoint(ctx: Context, runtime: Path, harness: Harness) -> Check | None:
     return Check(name, False, "; ".join(problems))
 
 
+def _peer_sockets(ctx: Context) -> Check | None:
+    try:
+        claudes = [s for s in ctx.sessions.sessions if s.harness == "claude"]
+    except BellhopError:
+        return None
+    name = f"{SOCKET_ROUTE} sessions"
+    try:
+        routes = [(s, ctx.wiring.untraced(s, binding_for(s, ctx.bindings))) for s in claudes]
+        accepting = [
+            (session, route.socket_obstacle(session))
+            for session, route in routes
+            if isinstance(route, ClaudeRoute) and route.accepting(session)
+        ]
+    except BellhopError as error:
+        return Check(name, False, str(error))
+    if not accepting:
+        return None
+    problems = [f"{session.session_id}: {why}" for session, why in accepting if why is not None]
+    if problems:
+        return Check(name, False, "; ".join(problems))
+    return Check(name, True, f"accepting claude sessions: {len(accepting)}, every socket usable")
+
+
 def _hls(ctx: Context) -> Check:
     try:
         count = len(ctx.sessions.sessions)
@@ -255,7 +280,8 @@ def run_checks(ctx: Context) -> tuple[list[Check], Path | None]:
         checks.append(Check("sockets", not dead, f"dead: {names}" if dead else "none dead"))
         found = [_endpoint(ctx, runtime_path, harness) for harness in ENDPOINTS]
         checks += [check for check in found if check is not None]
-    return checks, runtime_path
+    peers = _peer_sockets(ctx) if store.ok else None
+    return [*checks, *([peers] if peers is not None else [])], runtime_path
 
 
 def prune_all(ctx: Context, runtime: Path | None) -> dict[str, int]:

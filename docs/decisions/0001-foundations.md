@@ -29,7 +29,8 @@ code; later records refine them.
 - Messages are unauthenticated: everything runs as one user and sender names are self-asserted.
   The docs say so; there is no auth.
 - Claude: never `crossSessionInbound: accept`, and never imitate another Claude session on the
-  peer socket. The inside piece is chosen by a spike among an MCP stdio relay, the same relay
+  peer socket (partly lifted by [ADR 0008](0008-claude-socket.md), for a session whose own
+  settings say `accept`). The inside piece is chosen by a spike among an MCP stdio relay, the same relay
   started from a mod or a `SessionStart` command hook, and a mod calling `$.prompt.submit`; the MCP
   relay is the default if the spike is inconclusive.
 - Codex: reach the session through the app server it is attached to: the shared daemon when it

@@ -10,23 +10,30 @@ import socket
 import sys
 import threading
 import time
-import uuid
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
-from typing import Literal, TextIO
+from typing import TextIO
 
 from bellhop.config import load_config
 from bellhop.errors import BellhopError
 from bellhop.identity import ancestors, process_table
 from bellhop.paths import configured_dir
-from bellhop.routes.unix import MISMATCH, WIRE, endpoint_path
+from bellhop.routes.claude import (
+    CONFIG_DIR_ENV,
+    DEFAULT_CONFIG_DIR,
+    Priority,
+    own_socket,
+    registered,
+    send_frame,
+    session_of,
+)
+from bellhop.routes.unix import MISMATCH, WIRE, endpoint_path, remaining
 from bellhop.runtime import resolve_runtime_dir
 from bellhop.trace import Emit, quiet, tracer
 from bellhop.transcripts.claude import transcript_of
 
-type Priority = Literal["later", "next"]
 type Forward = Callable[[str, Priority], str | None]
 type Bounded = Callable[[str, Priority, float], str | None]
 type Registry = Callable[[Path, int], Mapping[str, object] | None]
@@ -34,10 +41,8 @@ type Registry = Callable[[Path, int], Mapping[str, object] | None]
 SERVER_INFO = {"name": "bellhop", "version": "1"}
 CHILD_SOCKET, CHILD_TOKEN = "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN"
 START_SESSION = "CLAUDE_CODE_SESSION_ID"
-CONFIG_DIR = "CLAUDE_CONFIG_DIR"
 PRIORITIES: Mapping[str, Priority] = {"boundary": "later", "interrupt": "next"}
 DIGITS = re.compile(r"[0-9]+")
-SESSION_ID = re.compile(r"[0-9a-fA-F-]{8,64}")
 REQUEST_LIMIT = 64 * 1024
 REQUEST_SECONDS = 5.0
 FORWARD_SECONDS = 1.0
@@ -114,48 +119,14 @@ def reply(request: Request, info: SessionInfo, forward: Forward) -> str:
             return f"error unknown header {request.header}"
 
 
-def frame(token: str, text: str, priority: Priority, message_id: str) -> bytes:
-    auth = {"type": "auth", "token": token}
-    user = {
-        "type": "user",
-        "message": {"role": "user", "content": text},
-        "priority": priority,
-        "msgV": 1,
-        "msg_id": message_id,
-    }
-    return f"{json.dumps(auth)}\n{json.dumps(user)}\n".encode()
-
-
-def remaining(deadline: float) -> float:
-    left = deadline - time.monotonic()
-    if left <= 0:
-        raise TimeoutError("forward deadline passed")
-    return left
-
-
 def forwarder(channel: Channel) -> Bounded:
     def forward(text: str, priority: Priority, seconds: float) -> str | None:
         if seconds <= 0:
             return "the relay ran out of time before forwarding"
-        payload = frame(channel.token, text, priority, str(uuid.uuid4()))
-        deadline = time.monotonic() + min(seconds, FORWARD_SECONDS)
-        try:
-            with socket.socket(socket.AF_UNIX) as peer:
-                peer.settimeout(remaining(deadline))
-                peer.connect(channel.socket)
-                peer.settimeout(remaining(deadline))
-                peer.sendall(payload)
-                with contextlib.suppress(OSError):
-                    peer.shutdown(socket.SHUT_WR)
-        except OSError as error:
-            return f"claude's messaging socket: {error.strerror or error}"
-        return None
+        limit = min(seconds, FORWARD_SECONDS)
+        return send_frame(Path(channel.socket), text, priority, limit, token=channel.token)
 
     return forward
-
-
-def belongs_to(channel: Channel, pid: int) -> bool:
-    return Path(channel.socket).name == f"{pid}.sock"
 
 
 def child_channel(env: Mapping[str, str]) -> Channel | None:
@@ -163,37 +134,25 @@ def child_channel(env: Mapping[str, str]) -> Channel | None:
     return Channel(path, token) if path and token else None
 
 
-def registry_path(claude_dir: Path, pid: int) -> Path:
-    return claude_dir / "sessions" / f"{pid}.json"
-
-
 def session_info(entry: Mapping[str, object] | None, claude_dir: Path) -> SessionInfo:
-    session = entry.get("sessionId") if entry is not None else None
+    session = session_of(entry)
     cwd = entry.get("cwd") if entry is not None else None
-    if not isinstance(session, str) or not SESSION_ID.fullmatch(session):
+    if session is None:
         return SessionInfo(None, None)
     if not isinstance(cwd, str) or not cwd.startswith("/"):
         return SessionInfo(session, None)
     return SessionInfo(session, transcript_of(claude_dir, cwd, session))
 
 
-def read_registry(claude_dir: Path, pid: int) -> Mapping[str, object] | None:
-    try:
-        entry = json.loads(registry_path(claude_dir, pid).read_text())
-    except (OSError, ValueError):
-        return None
-    return entry if isinstance(entry, dict) and entry.get("pid") == pid else None
-
-
 def current_session(claude_dir: Path, pid: int) -> SessionInfo:
-    return session_info(read_registry(claude_dir, pid), claude_dir)
+    return session_info(registered(claude_dir, pid), claude_dir)
 
 
 def enclosing_claude(
     claude_dir: Path,
     above: Sequence[int],
     started_as: str | None,
-    read: Registry = read_registry,
+    read: Registry = registered,
 ) -> int | None:
     return next(
         (
@@ -218,7 +177,7 @@ def claude_pid(
     chain: Sequence[int],
     started_as: str | None,
     *,
-    read: Registry = read_registry,
+    read: Registry = registered,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
 ) -> int:
@@ -438,12 +397,12 @@ class Relay:
         self.trace("note", text=text)
 
     def start(self) -> None:
-        claude_dir = configured_dir(self.env, CONFIG_DIR, ".claude")
+        claude_dir = configured_dir(self.env, CONFIG_DIR_ENV, DEFAULT_CONFIG_DIR)
         if claude_dir is None:
-            self.say(f"{CONFIG_DIR} must be an absolute path; not listening")
+            self.say(f"{CONFIG_DIR_ENV} must be an absolute path; not listening")
             return
         pid = claude_pid(claude_dir, parent_chain(self.parent), self.env.get(START_SESSION))
-        if not belongs_to(self.channel, pid):
+        if not own_socket(self.channel.socket, pid):
             self.say(f"the messaging socket here is not claude {pid}'s own; not listening")
             return
         try:

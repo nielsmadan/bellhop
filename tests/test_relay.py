@@ -10,7 +10,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -22,18 +22,17 @@ from bellhop.relay import (
     Relay,
     Request,
     SessionInfo,
-    belongs_to,
     claude_pid,
     forwarder,
     mcp_reply,
     parse_request,
-    read_registry,
     reply,
     serve,
     session_info,
     watch_parent,
 )
 from bellhop.routes.unix import exchange, ping
+from conftest import claude_peer
 
 SESSION = "c1a0de00-0000-4000-8000-00000000c1de"
 TOKEN = "child-token-not-for-logs"  # noqa: S105
@@ -128,19 +127,6 @@ def test_the_registry_names_the_session_and_its_transcript(tmp_path: Path) -> No
     )
     assert session_info(None, tmp_path) == SessionInfo(None, None)
     assert session_info({"sessionId": SESSION}, tmp_path) == SessionInfo(SESSION, None)
-
-
-@pytest.mark.parametrize(
-    "entry", [{"pid": 5151, "sessionId": SESSION}, {"sessionId": SESSION}], ids=["other", "none"]
-)
-def test_a_registry_entry_that_does_not_name_our_pid_is_not_ours(
-    tmp_path: Path, entry: dict[str, object]
-) -> None:
-    sessions = tmp_path / "sessions"
-    sessions.mkdir()
-    (sessions / "4242.json").write_text(json.dumps(entry))
-
-    assert read_registry(tmp_path, 4242) is None
 
 
 def test_a_session_id_that_is_not_an_id_names_no_session(tmp_path: Path) -> None:
@@ -305,30 +291,6 @@ def test_an_mcp_notification_gets_no_answer_and_an_unknown_method_an_error() -> 
     unknown = mcp_reply({"id": 9, "method": "resources/list"})
     assert unknown is not None
     assert unknown["error"] == {"code": -32601, "message": "method not found: resources/list"}
-
-
-@contextlib.contextmanager
-def claude_peer(path: Path) -> Iterator[list[bytes]]:
-    received: list[bytes] = []
-    server = socket.socket(socket.AF_UNIX)
-    server.bind(str(path))
-    server.listen(4)
-
-    def accept() -> None:
-        with contextlib.suppress(OSError):
-            while True:
-                conn, _ = server.accept()
-                with conn:
-                    data = b""
-                    while chunk := conn.recv(65536):
-                        data += chunk
-                    received.append(data)
-
-    threading.Thread(target=accept, daemon=True).start()
-    try:
-        yield received
-    finally:
-        server.close()
 
 
 def frames(received: list[bytes]) -> list[list[dict[str, object]]]:
@@ -714,8 +676,3 @@ def test_the_relay_never_listens_on_a_channel_inherited_from_another_claude(
 
     assert listening is False
     assert f"is not claude {os.getpid()}'s own; not listening" in notes
-
-
-def test_a_channel_belongs_to_the_claude_its_socket_is_named_after() -> None:
-    assert belongs_to(Channel("/tmp/cc-socks/4242.sock", TOKEN), 4242) is True
-    assert belongs_to(Channel("/tmp/cc-socks/5151.sock", TOKEN), 4242) is False

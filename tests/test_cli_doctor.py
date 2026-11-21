@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 import socket
 from datetime import UTC, datetime, timedelta
@@ -9,10 +10,22 @@ import pytest
 from bellhop.cli import main
 from bellhop.cli.doctor import NEWER_WIRE, inside, remove_if_unchanged, socket_inode
 from bellhop.drain import DrainLock, DrainStatus, lock_path, status_path, write_status
+from bellhop.identity import Proc
 from bellhop.routes import ENDPOINTS
 from bellhop.routes.pi import UNLISTED_PI
 from bellhop.store import SCHEMA_VERSION, connect, insert_message
-from conftest import ALPHA, Bell, check_golden, make_message, pong_line, pong_server
+from conftest import (
+    ALPHA,
+    STARTED,
+    Bell,
+    FakeHls,
+    accepting_claude,
+    check_golden,
+    claude_peer,
+    make_message,
+    pong_line,
+    pong_server,
+)
 
 
 def checks(payload: dict[str, object]) -> dict[str, tuple[bool, str]]:
@@ -367,3 +380,102 @@ def test_a_dead_codex_session_link_is_reported_and_pruned_with_its_target(
     assert before["error"]["code"] == "doctor_failed"
     assert payload["pruned"]["sockets"] == 1
     assert (link.is_symlink(), target.exists()) == (False, False)
+
+
+STARTED_AT = "2026-11-13T09:00:00Z"
+
+
+def listed_claude(fake_hls: FakeHls, *pids: int) -> list[str]:
+    sessions = [f"c{pid}a0de-0000-4000-8000-00000000c1de" for pid in pids]
+    fake_hls.respond(
+        [
+            FakeHls.record("claude", session, process={"pid": pid, "startedAt": STARTED_AT})
+            for session, pid in zip(sessions, pids, strict=True)
+        ]
+    )
+    return sessions
+
+
+def test_doctor_checks_the_socket_of_a_claude_that_accepts_peer_messages(
+    fake_hls: FakeHls,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    short_tmp: Path,
+    runtime: Path,
+) -> None:
+    home, sock = short_tmp / "claude", short_tmp / "4242.sock"
+    (session,) = listed_claude(fake_hls, 4242)
+    accepting_claude(home, sock, session=session)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(home))
+
+    gone = main(["doctor", "--json"])
+    without = checks(json.loads(capsys.readouterr().out))["claude-socket sessions"]
+    with claude_peer(sock):
+        listening = main(["doctor", "--json"])
+    found = checks(json.loads(capsys.readouterr().out))["claude-socket sessions"]
+
+    assert (gone, without) == (
+        1,
+        (False, f"{session}: claude's messaging socket {sock} is gone"),
+    )
+    assert (listening, found) == (
+        0,
+        (True, "accepting claude sessions: 1, every socket usable"),
+    )
+
+
+def test_doctor_names_each_accepting_claude_whose_socket_cannot_be_used(
+    fake_hls: FakeHls,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    short_tmp: Path,
+    runtime: Path,
+) -> None:
+    home, sock = short_tmp / "claude", short_tmp / "4242.sock"
+    first, second = listed_claude(fake_hls, 4242, 4343)
+    accepting_claude(home, sock, session=first)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(home))
+
+    with claude_peer(sock):
+        code = main(["doctor", "--json"])
+    found = checks(json.loads(capsys.readouterr().out))["claude-socket sessions"]
+
+    assert (code, found) == (
+        1,
+        (False, f"{second}: claude lists no session for pid 4343 in {home}/sessions"),
+    )
+
+
+def test_doctor_reads_a_bound_agents_own_claude_directory(
+    fake_hls: FakeHls,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    short_tmp: Path,
+    tmp_path: Path,
+    runtime: Path,
+) -> None:
+    home, sock = short_tmp / "claude", short_tmp / "4242.sock"
+    (session,) = listed_claude(fake_hls, 4242)
+    accepting_claude(home, sock, session=session)
+    config = tmp_path / "config-home" / "bellhop" / "config.toml"
+    config.parent.mkdir(parents=True)
+    config.write_text(
+        f'[agents.enki]\nharness = "claude"\nenv = {{ CLAUDE_CONFIG_DIR = "{home}" }}\n'
+    )
+    table = {4242: Proc(4242, 1, STARTED)}
+    monkeypatch.setattr("bellhop.cli.context.process_table", lambda: table)
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", session)
+    assert main(["bind", "enki", "--json"]) == 0
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID")
+    capsys.readouterr()
+
+    with claude_peer(sock):
+        code = main(["doctor", "--json"])
+    found = checks(json.loads(capsys.readouterr().out))["claude-socket sessions"]
+    config.write_text("[agents.enki\n")
+    broken = main(["doctor", "--json"])
+    after = checks(json.loads(capsys.readouterr().out))["claude-socket sessions"]
+
+    assert (code, found) == (0, (True, "accepting claude sessions: 1, every socket usable"))
+    assert (broken, after[0]) == (1, False)
+    assert str(config) in after[1]

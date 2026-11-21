@@ -55,8 +55,22 @@ What bellhop does not do, or does only partly, and what you see when you hit it.
 - **An `idle` message can arrive while a question dialog is open.** hooklinesinker reports `idle`
   while Claude shows a question dialog; Claude holds the message and delivers it after the dialog
   is answered or dismissed.
-- **A Claude session without the relay has no route.** `send` answers `no_route`, or stores a
-  `hold` with `--or-hold`. A running Claude keeps the relay it started with until it is restarted.
+- **A Claude session without the relay has no route unless Claude accepts peer messages.**
+  Without the relay and without `"crossSessionInbound": "accept"` in Claude's user settings,
+  `send` answers `no_route`, or stores a `hold` with `--or-hold`. A running Claude keeps the relay
+  it started with until it is restarted.
+- **bellhop reads `accept` only from Claude's user settings file** (`settings.json` in the
+  session's Claude config directory). A session given `accept` by `--settings` or a managed policy
+  is not reached over `claude-socket`. A session whose effective setting is stricter than that
+  file (a policy, a repository's settings) is pushed to; Claude holds or refuses the message, and
+  it stays `sent`.
+- **`claude-socket` uses only private directories.** The Claude config directory, its `sessions`
+  directory and the directory of the messaging socket must belong to you and not be group- or
+  world-writable; otherwise the session is unreachable and `sessions --json` names the directory
+  in `reason`.
+- **Over `claude-socket` a message is confirmed only from the transcript path hooklinesinker
+  reports.** The relay can name the transcript itself; without it, a session hooklinesinker lists
+  with no transcript path keeps its messages at `sent`.
 - **The relay can take up to 10 s to start listening** when it is started through a wrapper that
   does not `exec` Claude.
 
@@ -109,6 +123,7 @@ What bellhop does not do, or does only partly, and what you see when you hit it.
 - **Restart a Codex or Pi agent after changing its homes.** bellhop reads an agent's `CODEX_HOME`
   and `PI_CODING_AGENT_DIR` from `config.toml` each time; a running agent keeps writing to its old
   home, so after an edit its messages stop being confirmed until it restarts. (Claude
-  transcripts are found through hooklinesinker and the relay, not `CLAUDE_CONFIG_DIR`.)
+  transcripts are found through hooklinesinker and the relay, not `CLAUDE_CONFIG_DIR`; the
+  `claude-socket` route reads the agent's `CLAUDE_CONFIG_DIR` on every probe.)
 - **A failed start is recognised by its `detail`**, which starts with `start failed:`; `send
   --wake` refuses such an agent until `bellhop launch` retries it.

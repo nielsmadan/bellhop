@@ -329,6 +329,38 @@ relay and then bellhop's own:
   `queued_command` attachment with that origin whose `prompt` is the envelope. The
   `queue-operation` `enqueue` written while a dialog is open is not a delivery.
 
+### Claude socket, as built
+
+For a session whose relay does not answer and whose Claude user settings say
+`"crossSessionInbound": "accept"` ([ADR 0008](../decisions/0008-claude-socket.md)):
+
+- **What bellhop reads.** `settings.json` and `sessions/<pid>.json` in the session's Claude
+  config directory, on every probe and push (for a configured agent its `CLAUDE_CONFIG_DIR`, else
+  `.claude` in its home; for any other session the directory its transcript lies in, else the
+  caller's `CLAUDE_CONFIG_DIR` or `~/.claude`), and
+  `sessions/<pid>.<hash>.key` on a push. The registry entry must name the pid and the addressed
+  session, and its `messagingSocketPath` must be an absolute path named `<pid>.sock`.
+- **What it trusts.** The config directory and `sessions` must be the user's and not group- or
+  world-writable; the socket must be a socket the user owns in such a directory (the same check
+  as for a Codex app-server socket).
+- **The write.** One connection: an `auth` line with the key file's `peerToken` when there is one,
+  then the `user` frame the relay writes (`priority: "later"` or `"next"`). Connect and write share
+  1 s. Claude sends no reply, so `accepted` means only that the frame was written.
+- **Replies.** `accepted` with `later` or `next`; `busy claude's messaging socket: <reason>` when
+  the connect or write failed; `busy` with the route's reason when the session cannot be written
+  to (`no claude config directory or pid is known for this session`,
+  `<file> does not accept peer messages`, `claude lists no session for pid <pid> in <dir>`,
+  `claude pid <pid> lists no session id`, `claude pid <pid> now runs session <id>`,
+  `claude pid <pid> lists no messaging socket`, `claude's messaging socket <path> is gone`,
+  `claude's messaging socket cannot be used: <reason>`, `<dir> is not a private directory of uid
+  <uid>`). For a session whose settings do not say `accept`, `reason` is the relay's, followed by
+  `<file> does not accept peer messages` naming the settings file bellhop read.
+- **Replaced sessions.** A registry entry that names another session makes `replaced` true, so
+  the drainer fails the old session's messages as it does for the relay.
+- **Not measured:** a frame with no `auth` line against a real Claude (the smoke test asserts
+  that its session has a key file, so it measures the frame with one), a wrong token, and more
+  than one key file for a pid.
+
 ## Known limits found
 
 - **After a Codex TUI quits, its thread stays loaded in the daemon and listed by hls**, and a message

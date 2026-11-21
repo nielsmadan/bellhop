@@ -11,6 +11,8 @@ from bellhop.errors import BellhopError
 from bellhop.models import FAKE_ROUTES_ENV, Binding, PushResult, Session
 from bellhop.paths import configured_dir, default_state
 from bellhop.routes import Route, RouteFinder, RouteSetup, endpoint_routes, route_finder
+from bellhop.routes.claude import CONFIG_DIR_ENV as CLAUDE_DIR_ENV
+from bellhop.routes.claude import DEFAULT_CONFIG_DIR as CLAUDE_DEFAULT_DIR
 from bellhop.routes.endpoint import EndpointRoute, Pongs
 from bellhop.runtime import resolve_runtime_dir
 from bellhop.trace import Emit, quiet
@@ -20,6 +22,7 @@ from bellhop.transcripts.common import Reported
 PI_AGENT_DIR_ENV = "PI_CODING_AGENT_DIR"
 CODEX_HOME_ENV = "CODEX_HOME"
 PI_DEPTH = 2
+CLAUDE_DEPTH = 2
 
 
 @dataclass(frozen=True)
@@ -29,7 +32,7 @@ class Wiring:
     untraced: RouteFinder
 
 
-type Probed = dict[str, tuple[bool, str | None]]
+type Probed = dict[str, tuple[str, bool, str | None]]
 
 
 def why_not(route: Route, session: Session) -> str:
@@ -59,14 +62,15 @@ class TracedRoute:
         return self.route.queues_until_idle
 
     def note(self, session: Session, found: bool, reason: str | None) -> None:
-        if self.probed.get(session.session_id) == (found, reason):
+        name = self.name
+        if self.probed.get(session.session_id) == (name, found, reason):
             return
-        self.probed[session.session_id] = (found, reason)
+        self.probed[session.session_id] = (name, found, reason)
         self.emit(
             "probe",
             session=session.session_id,
             harness=session.harness,
-            route=self.name,
+            route=name,
             reachable=found,
             reason=reason,
         )
@@ -167,6 +171,10 @@ def codex_home(env: Mapping[str, str]) -> Path | None:
     return configured_dir(env, CODEX_HOME_ENV, ".codex")
 
 
+def claude_dir(env: Mapping[str, str]) -> Path | None:
+    return configured_dir(env, CLAUDE_DIR_ENV, CLAUDE_DEFAULT_DIR)
+
+
 def endpoint_transcript(routes: Mapping[str, EndpointRoute]) -> Reported:
     def reported(session: Session) -> Path | None:
         route = routes.get(session.harness)
@@ -188,6 +196,12 @@ def session_homes(session: Session) -> dict[str, str]:
         return {CODEX_HOME_ENV: str(codex)}
     if session.harness == "pi" and len(parents) > PI_DEPTH and parents[1].name == "sessions":
         return {PI_AGENT_DIR_ENV: str(parents[PI_DEPTH])}
+    if (
+        session.harness == "claude"
+        and len(parents) > CLAUDE_DEPTH
+        and parents[1].name == "projects"
+    ):
+        return {CLAUDE_DIR_ENV: str(parents[CLAUDE_DEPTH])}
     return {}
 
 
@@ -221,6 +235,9 @@ def wire(env: Mapping[str, str], config: Callable[[], Config], emit: Emit = quie
             pongs=pongs,
             endpoints=endpoints,
             codex_home=lambda session, binding: codex_home(
+                homes_env(env, config, session, binding)
+            ),
+            claude_dir=lambda session, binding: claude_dir(
                 homes_env(env, config, session, binding)
             ),
         )

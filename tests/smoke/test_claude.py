@@ -440,7 +440,25 @@ class ClaudeCells:
         }
 
 
-def run_cells(run: SmokeRun, env: Mapping[str, str]) -> dict[str, dict[str, object]]:
+CELLS = (
+    "idle-to-idle",
+    "idle-to-working",
+    "now-to-working",
+    "hold-and-inbox",
+    "s7",
+    "s3",
+    "s3-now",
+    "s3b",
+    "child-env",
+    "max-body",
+    "s10",
+)
+SOCKET_CELLS = tuple(name for name in CELLS if name != "child-env")
+
+
+def run_cells(
+    run: SmokeRun, env: Mapping[str, str], names: tuple[str, ...] = CELLS
+) -> dict[str, dict[str, object]]:
     cells = ClaudeCells(run, env)
     named: dict[str, Cell] = {
         "idle-to-idle": cells.idle_to_idle,
@@ -455,7 +473,8 @@ def run_cells(run: SmokeRun, env: Mapping[str, str]) -> dict[str, dict[str, obje
         "max-body": cells.max_body,
         "s10": cells.s10,
     }
-    results = run_named(named)
+    assert set(named) == set(CELLS)
+    results = run_named({name: named[name] for name in names})
     cells.idle()
     return results
 
@@ -481,17 +500,33 @@ def test_bellhop_delivers_into_a_real_claude_through_its_relay() -> None:
             stop_drainer(env)
             (run.layout.logs / "claude-cells.json").write_text(json.dumps(results, indent=2))
     assert {name: cell.get("ok") for name, cell in results.items()} == dict.fromkeys(results, True)
-    assert set(results) == {
-        "idle-to-idle",
-        "idle-to-working",
-        "now-to-working",
-        "hold-and-inbox",
-        "s7",
-        "s3",
-        "s3-now",
-        "s3b",
-        "child-env",
-        "max-body",
-        "s10",
-    }
+    assert set(results) == set(CELLS)
+    assert run.leftovers == []
+
+
+def test_bellhop_delivers_into_a_real_claude_that_accepts_peer_messages() -> None:
+    run = smoke_run(claude_allowed=ALLOWED)
+    results: dict[str, dict[str, object]] = {}
+    routes: list[object] = []
+    keyed = False
+    with run:
+        env = run.env
+        settings = run.layout.claude_dir / "settings.json"
+        settings.write_text(
+            json.dumps(json.loads(settings.read_text()) | {"crossSessionInbound": "accept"})
+        )
+        run.launch("claude", NAME, extra=["--"], prompt="Reply with the single word OK.")
+        run.wait_ready(NAME)
+        try:
+            routes = [row.get("route") for row in harness_rows(env, run.layout.root, "claude")]
+            results = run_cells(run, env, SOCKET_CELLS)
+            routes += [row.get("route") for row in harness_rows(env, run.layout.root, "claude")]
+            keyed = any((run.layout.claude_dir / "sessions").glob("*.key"))
+        finally:
+            stop_drainer(env)
+            (run.layout.logs / "claude-socket-cells.json").write_text(json.dumps(results, indent=2))
+    assert routes == ["claude-socket", "claude-socket"]
+    assert keyed
+    assert {name: cell.get("ok") for name, cell in results.items()} == dict.fromkeys(results, True)
+    assert set(results) == set(SOCKET_CELLS)
     assert run.leftovers == []

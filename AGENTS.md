@@ -78,7 +78,19 @@ extension and Claude's MCP config.
   ping and 2 s for a deliver; the wire is in `docs/reference/routes.md`); `routes/endpoint`
   (`EndpointRoute`) reaches an inside piece at `<runtime_dir>/<harness>-<pid>.sock` for every
   harness in `routes.ENDPOINTS` (Claude's relay, Pi's extension), sharing one pong per socket per
-  second (`Pongs`) between `reachable`, `replaced` and the reader's transcript lookup. `Route.replaced` is true when
+  second (`Pongs`) between `reachable`, `replaced` and the reader's transcript lookup.
+  `routes/claude` holds what both Claude routes share (`frame`, `send_frame`, the registry reader
+  `registered`, `session_of`, `own_socket`), `ClaudeSocketRoute` (`claude-socket`) and
+  `ClaudeRoute`, which `route_finder` gives every Claude session: the relay when it answers, else
+  the socket route, chosen once per route object when it is first asked and never by the finder
+  (its `name` and its `push` share that choice), with `replaced` and `obstacle` drawing on
+  both. The socket route serves only a session whose Claude user settings
+  say `"crossSessionInbound": "accept"`: it reads `settings.json` and `sessions/<pid>.json` in the
+  session's Claude config directory and writes the frame to that entry's `messagingSocketPath`,
+  with the `peerToken` of `sessions/<pid>.*.key` when there is one. It trusts the config directory
+  and `sessions` only when they are the user's and not group- or world-writable, and the socket
+  only through `codex_rpc.owned_socket`
+  ([ADR 0008](docs/decisions/0008-claude-socket.md)). `Route.replaced` is true when
   the session's process now serves another session; the drainer then fails that session's
   messages. A route may raise `BellhopError` for an unusable runtime dir: `send` lets it fail the
   command unless `--or-hold` (a warning and a hold; a `hold` never probes), `sessions` reports it
@@ -102,7 +114,9 @@ extension and Claude's MCP config.
 - `wiring`: the one place that turns env and config into the route and reader setups
   (`wire(env, config) -> Wiring`), used by `cli/context` and the drainer. Both finders take the
   session and its live binding (`targets.binding_for`; the agent's binding for an agent target);
-  the Codex route keys on it.
+  the Codex route keys on it. `homes_env` gives a configured agent's homes from its `env` and any
+  other session's from its transcript path (`session_homes`); the Codex home and Claude's config
+  directory (`claude_dir`) both come from it.
 - `allowlist`: the environment variables a launched agent and the tmux client may inherit.
 - `launch`, `readiness`, `tmux`, `codex_session`: starting agents (`bellhop launch`, `send
   --wake`). `launch` builds the child's argv and its allowlisted environment (`/usr/bin/env -i`,
@@ -125,8 +139,8 @@ extension and Claude's MCP config.
   names its socket after its parent Claude (an ancestor only when that ancestor's registry entry
   names the session the relay started in), reads its session and transcript from
   `$CLAUDE_CONFIG_DIR/sessions/<pid>.json` on every request, refuses another session's `deliver`,
-  and forwards a frame (`priority: "later"` for a boundary, `"next"` for an interrupt) to the
-  messaging socket and child token in its own environment. One relay per Claude holds
+  and forwards a frame (`priority: "later"` for a boundary, `"next"` for an interrupt;
+  `routes.claude.send_frame`) to the messaging socket and child token in its own environment. One relay per Claude holds
   `claude-<pid>.lock` (a second one waits and takes over); it removes only its own socket, on
   stdin EOF, SIGTERM, SIGHUP, SIGINT or when its parent goes. ADR 0005 records the Claude
   internals it relies on. `_integrations/claude/bellhop-mcp.json`

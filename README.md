@@ -4,7 +4,8 @@ Deliver a short message into a running coding-agent session (Claude Code, Codex,
 harness's own in-process route, at one of three urgency levels, and start a stopped agent when
 asked.
 
-- **Claude Code** through bellhop's relay, an MCP server you add once.
+- **Claude Code** through bellhop's relay, an MCP server you add once, or with no relay when
+  Claude's `crossSessionInbound` setting is `accept`.
 - **Codex** through an app server bellhop can find: start the session with `bellhop codex`, which
   runs one for it. A plain `codex` is reachable only while it is attached to Codex's shared
   daemon, which it is not when started with `-c` overrides or `--no-daemon`.

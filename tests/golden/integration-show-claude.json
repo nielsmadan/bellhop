@@ -12,6 +12,7 @@
       "install for every session: claude mcp add --scope user bellhop -- bellhop _relay",
       "or for one run: claude --mcp-config <exported dir>/bellhop-mcp.json -- <prompt> (end the --mcp-config list before a prompt)",
       "bellhop must be on the PATH Claude starts MCP servers with; a running session keeps the relay it started with until it is restarted.",
+      "without the relay: set \"crossSessionInbound\": \"accept\" in Claude's user settings (~/.claude/settings.json, or settings.json in $CLAUDE_CONFIG_DIR). bellhop then writes to the session's messaging socket itself (route claude-socket). With that setting Claude delivers a message from any process running as you without holding it for review.",
       "bellhop never edits Claude's configuration."
     ]
   }

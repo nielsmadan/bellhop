@@ -18,6 +18,7 @@ MESSAGE_LIMIT = 4 << 20
 CLOSE, PING, PONG = 8, 9, 10
 FIN = MASKED = 0x80
 LENGTH_16, LENGTH_64 = 126, 127
+SHARED_WRITE = 0o022
 HEAD, HEAD_16, HEAD_64 = 2, 4, 10
 
 
@@ -48,14 +49,19 @@ def masked(data: bytes, mask: bytes) -> bytes:
     return bytes(b ^ mask[i % 4] for i, b in enumerate(data))
 
 
+def private_directory(path: Path) -> Path:
+    found, uid = os.stat(path), os.getuid()
+    if found.st_uid != uid or found.st_mode & SHARED_WRITE:
+        raise ConnectionError(f"{path} is not a private directory of uid {uid}")
+    return path
+
+
 def owned_socket(path: Path) -> Path:
     target = path.resolve()
-    found, parent = os.lstat(target), os.stat(target.parent)
-    uid = os.getuid()
+    found, uid = os.lstat(target), os.getuid()
     if not stat.S_ISSOCK(found.st_mode) or found.st_uid != uid:
         raise ConnectionError(f"{target} is not a socket owned by uid {uid}")
-    if parent.st_uid != uid or parent.st_mode & 0o022:
-        raise ConnectionError(f"{target.parent} is not a private directory of uid {uid}")
+    private_directory(target.parent)
     return target
 
 

@@ -19,13 +19,21 @@ from bellhop.transcripts import PlainTranscripts
 from bellhop.wiring import (
     TracedReader,
     TracedRoute,
+    claude_dir,
     endpoint_transcript,
     fake_routes,
     pi_agent_dir,
     session_homes,
     wire,
 )
-from conftest import NOW, make_session, pong_line
+from conftest import (
+    CLAUDE_SESSION,
+    NOW,
+    accepting_claude,
+    claude_peer,
+    make_session,
+    pong_line,
+)
 
 
 @pytest.mark.parametrize(
@@ -221,7 +229,7 @@ class Recorder:
 
 def test_a_probe_is_recorded_once_until_its_answer_changes() -> None:
     seen = Recorder()
-    probed: dict[str, tuple[bool, str | None]] = {}
+    probed: dict[str, tuple[str, bool, str | None]] = {}
     session = make_session("s1")
     down = TracedRoute(FakeRoute(is_reachable=False), seen, probed)
 
@@ -322,3 +330,84 @@ def test_wiring_with_a_tracer_records_what_its_routes_do(tmp_path: Path) -> None
     )
     assert route.obstacle(session) == "the fake route is set unreachable"
     assert [event for event, _ in seen.events] == ["probe"]
+
+
+def test_a_probe_is_recorded_again_when_the_route_that_answers_changes() -> None:
+    seen = Recorder()
+    probed: dict[str, tuple[str, bool, str | None]] = {}
+    session = make_session("s1")
+
+    for name in ("claude-relay", "claude-relay", "claude-socket"):
+        TracedRoute(FakeRoute(name=name), seen, probed).reachable(session)
+
+    assert [fields["route"] for _, fields in seen.events] == ["claude-relay", "claude-socket"]
+
+
+def test_a_claude_sessions_config_directory_comes_from_its_transcript(tmp_path: Path) -> None:
+    own = tmp_path / "other" / "projects" / "-work-c1" / "c1.jsonl"
+    elsewhere = tmp_path / "other" / "exports" / "-work-c1" / "c1.jsonl"
+
+    assert session_homes(make_session("c1", transcript_path=own)) == {
+        "CLAUDE_CONFIG_DIR": str(tmp_path / "other")
+    }
+    assert session_homes(make_session("c1", transcript_path=elsewhere)) == {}
+    assert session_homes(make_session("c1")) == {}
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(None, Path("/home/me/.claude")), ("/cfg", Path("/cfg")), ("relative/claude", None)],
+)
+def test_claudes_config_directory_is_the_configured_one_or_the_default(
+    value: str | None, expected: Path | None
+) -> None:
+    env = {"HOME": "/home/me"} | ({"CLAUDE_CONFIG_DIR": value} if value is not None else {})
+
+    assert claude_dir(env) == expected
+
+
+def test_the_wired_finder_reaches_an_accepting_claude_over_its_socket(
+    tmp_path: Path, short_tmp: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = short_tmp / "rt"
+    runtime.mkdir(mode=0o700)
+    monkeypatch.setenv("BELLHOP_RUNTIME_DIR", str(runtime))
+    home, sock = short_tmp / "claude", short_tmp / "4242.sock"
+    accepting_claude(home, sock)
+    env = {**os.environ, "HOME": str(tmp_path), "CLAUDE_CONFIG_DIR": str(home)}
+    wiring = wire(env, lambda: Config(Path("/c")))
+    session = make_session(CLAUDE_SESSION)
+
+    with claude_peer(sock):
+        route = wiring.routes(session, None)
+        assert route is not None
+        found = (route.reachable(session), route.name)
+
+    assert found == (True, "claude-socket")
+
+
+def test_a_configured_agents_claude_directory_comes_from_its_config_not_the_caller(
+    tmp_path: Path, short_tmp: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = short_tmp / "rt"
+    runtime.mkdir(mode=0o700)
+    monkeypatch.setenv("BELLHOP_RUNTIME_DIR", str(runtime))
+    home, sock = short_tmp / "agent-claude", short_tmp / "4242.sock"
+    accepting_claude(home, sock)
+    config = Config(
+        Path("/c"),
+        agents={"enki": AgentConfig("enki", "claude", env={"CLAUDE_CONFIG_DIR": str(home)})},
+    )
+    env = {**os.environ, "HOME": str(tmp_path), "CLAUDE_CONFIG_DIR": str(tmp_path / "callers")}
+    wiring = wire(env, lambda: config)
+    session = make_session(CLAUDE_SESSION)
+    binding = Binding(
+        "enki", "claude", "live", CLAUDE_SESSION, None, None, None, None, None, "bind", None, NOW
+    )
+
+    with claude_peer(sock):
+        own, callers = wiring.routes(session, binding), wiring.routes(session, None)
+        assert own is not None and callers is not None
+        found = (own.reachable(session), callers.reachable(session))
+
+    assert found == (True, False)

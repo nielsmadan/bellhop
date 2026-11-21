@@ -6,7 +6,7 @@ from typing import Protocol
 
 from bellhop.errors import BellhopError
 from bellhop.models import Binding, Harness, PushResult, Session
-from bellhop.routes.claude import NAME as CLAUDE_NAME
+from bellhop.routes.claude import RELAY_ROUTE, ClaudeRoute, ClaudeSocketRoute
 from bellhop.routes.codex import SESSION_SOCKETS, CodexRoute, Probes, daemon_socket
 from bellhop.routes.endpoint import EndpointKind, EndpointRoute, Pongs
 from bellhop.routes.fake import fake_finder
@@ -46,6 +46,7 @@ class RouteSetup:
     pongs: Pongs = field(default_factory=Pongs)
     endpoints: Mapping[str, EndpointRoute] | None = None
     codex_probes: Probes = field(default_factory=Probes)
+    claude_dir: Callable[[Session, Binding | None], Path | None] = lambda session, binding: None
 
 
 ENDPOINTS: Mapping[Harness, EndpointKind] = {
@@ -57,7 +58,7 @@ ENDPOINTS: Mapping[Harness, EndpointKind] = {
         setup="install the pi extension (`bellhop integration show pi`) and restart pi",
     ),
     "claude": EndpointKind(
-        CLAUDE_NAME,
+        RELAY_ROUTE,
         "relay",
         "restart that claude so it starts the installed bellhop's relay",
         setup="start claude with bellhop's MCP config (`bellhop integration show claude`)",
@@ -95,6 +96,9 @@ def route_finder(setup: RouteSetup) -> RouteFinder:
     endpoints = setup.endpoints or endpoint_routes(setup.runtime_dir, setup.pongs)
 
     def find(session: Session, binding: Binding | None) -> Route | None:
+        if session.harness == "claude" and "claude" in endpoints:
+            direct = ClaudeSocketRoute(lambda target: setup.claude_dir(target, binding))
+            return ClaudeRoute(endpoints["claude"], direct, session)
         if session.harness in endpoints:
             return endpoints[session.harness]
         if session.harness == "codex":

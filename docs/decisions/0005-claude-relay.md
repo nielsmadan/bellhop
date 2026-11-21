@@ -41,7 +41,8 @@ The relay relies on seven things Claude Code does today, none of them a document
 ## Consequences
 
 - A Claude release that changes any of these breaks the Claude route quietly: the relay pongs
-  `"session": null` and every Claude session is unreachable (`no_route`). `doctor` names a
+  `"session": null` and every Claude session is unreachable (`no_route`), except one reached
+  over `claude-socket` ([ADR 0008](0008-claude-socket.md)). `doctor` names a
   listed relay that cannot name its session; `tests/smoke/test_claude.py` is the check to rerun
   after a Claude upgrade.
 - Long or non-ASCII working directories may be named differently by Claude (item 4); the reader
