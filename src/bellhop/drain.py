@@ -473,6 +473,14 @@ def drainer_env(env: Mapping[str, str]) -> dict[str, str]:
     }
 
 
+# Some Python builds have no posix_spawn setsid; the drainer then leaves the caller's session itself.
+OWN_SESSION = (
+    "import os, sys; os.setsid(); os.execv(sys.executable, [sys.executable, *sys.argv[1:]])"
+)
+
+type Spawn = Callable[..., int]
+
+
 def drainer_argv(executable: str) -> list[str]:
     return [executable, "-I", "-m", "bellhop", "_drain"]
 
@@ -502,7 +510,20 @@ def open_fds() -> list[int]:
         return list(range(3, 256))
 
 
-def start_drainer(env: Mapping[str, str]) -> int | None:
+def spawn_detached(
+    argv: Sequence[str],
+    env: Mapping[str, str],
+    file_actions: Sequence[tuple[object, ...]],
+    spawn: Spawn = os.posix_spawn,
+) -> int:
+    try:
+        return spawn(argv[0], argv, env, file_actions=file_actions, setsid=True)
+    except NotImplementedError:
+        own_session = [argv[0], "-I", "-c", OWN_SESSION, *argv[1:]]
+        return spawn(argv[0], own_session, env, file_actions=file_actions)
+
+
+def start_drainer(env: Mapping[str, str], spawn: Spawn = os.posix_spawn) -> int | None:
     if drainer_running(env):
         return None
     log = state_dir(env) / LOG_NAME
@@ -513,17 +534,16 @@ def start_drainer(env: Mapping[str, str]) -> int | None:
     os.close(opened)
     try:
         closes = [(os.POSIX_SPAWN_CLOSE, fd) for fd in inherited_fds(open_fds())]
-        return os.posix_spawn(
-            sys.executable,
+        return spawn_detached(
             drainer_argv(sys.executable),
             drainer_env(env),
-            file_actions=[
+            [
                 (os.POSIX_SPAWN_DUP2, descriptor, 1),
                 (os.POSIX_SPAWN_DUP2, descriptor, 2),
                 *closes,
                 (os.POSIX_SPAWN_OPEN, 0, os.devnull, os.O_RDONLY, 0),
             ],
-            setsid=True,
+            spawn,
         )
     finally:
         os.close(descriptor)

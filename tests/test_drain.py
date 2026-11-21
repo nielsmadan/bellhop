@@ -10,6 +10,7 @@ from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -534,6 +535,23 @@ def test_a_detached_drainer_is_started_and_restarted_after_a_kill(
     finally:
         for pid in spawned:
             stop(pid)
+
+
+def test_a_python_without_spawn_sessions_still_detaches_the_drainer(
+    process_env: dict[str, str],
+) -> None:
+    def spawn(path: str, argv: list[str], env: dict[str, str], **options: Any) -> int:
+        if "setsid" in options:
+            raise NotImplementedError("posix_spawn: setsid unavailable on this platform")
+        return os.posix_spawn(path, argv, env, **options)
+
+    pid = start_drainer(process_env, spawn)
+    try:
+        assert pid is not None
+        assert drainer_pid(process_env) == pid
+        assert os.getsid(pid) == pid
+    finally:
+        stop(pid)
 
 
 def test_the_drainer_keeps_none_of_the_callers_inherited_descriptors(
