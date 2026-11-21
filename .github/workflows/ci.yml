@@ -26,7 +26,7 @@ jobs:
       - uses: extractions/setup-just@v4.0.0
         with:
           just-version: "1.58.0"
-      - uses: actions/setup-node@v4.4.0
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version: "24"
       - name: Install locked dependencies
@@ -46,7 +46,7 @@ jobs:
       - uses: extractions/setup-just@v4.0.0
         with:
           just-version: "1.58.0"
-      - uses: actions/setup-node@v4.4.0
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version: "24"
       - name: Install locked dependencies
