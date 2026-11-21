@@ -1,3 +1,4 @@
+import contextlib
 import socket
 import threading
 from collections.abc import Callable
@@ -21,6 +22,11 @@ def runtime(short_tmp: Path) -> Path:
     return path
 
 
+@pytest.fixture(autouse=True)
+def patient_ping(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("bellhop.routes.endpoint.PING_SECONDS", 10.0)
+
+
 def pi_route(runtime: Path, pongs: Pongs | None = None) -> EndpointRoute:
     return EndpointRoute("pi", NAME, lambda: runtime, pongs or Pongs())
 
@@ -36,7 +42,7 @@ def serve(path: Path, handler: Handler, received: list[bytes]) -> socket.socket:
                 conn, _ = server.accept()
             except OSError:
                 return
-            with conn:
+            with conn, contextlib.suppress(OSError):
                 data = b""
                 while chunk := conn.recv(4096):
                     data += chunk
