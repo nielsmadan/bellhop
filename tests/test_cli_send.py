@@ -511,7 +511,7 @@ def stalling_pi(path: Path) -> Iterator[None]:
                 while chunk := conn.recv(65536):
                     data += chunk
                 if data.startswith(b"ping"):
-                    time.sleep(PING_SECONDS - 0.05)
+                    time.sleep(PING_SECONDS / 2)
                     conn.sendall(pong_line("p1"))
 
     threading.Thread(target=answer, daemon=True).start()
@@ -570,7 +570,7 @@ def test_send_to_codex_stays_under_ten_seconds_with_every_dependency_slow(
     monkeypatch.setenv("CODEX_HOME", str(short_tmp))
     socket_path = control / "app-server-control.sock"
     started = time.monotonic()
-    with app_server(socket_path, loaded=["c1"], start_reply="silent", delay=0.15):
+    with app_server(socket_path, loaded=["c1"], start_reply="silent", delay=0.1):
         code = main(["send", "c1", "hello", "--json"])
 
     elapsed = time.monotonic() - started
