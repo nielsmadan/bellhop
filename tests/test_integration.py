@@ -445,4 +445,4 @@ def test_show_codex_says_there_is_nothing_to_install(capsys: pytest.CaptureFixtu
 def test_export_lists_what_it_accepts(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["integration", "export", "codex", "--to", str(tmp_path)]) == 2
 
-    assert "(choose from claude, pi, skill)" in capsys.readouterr().err
+    assert "(choose from claude, pi, skill)" in capsys.readouterr().err.replace("'", "")

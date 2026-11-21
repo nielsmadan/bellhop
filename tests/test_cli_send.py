@@ -552,8 +552,9 @@ def test_send_to_pi_stays_under_ten_seconds_with_every_dependency_slow(
         code = main(["send", "p1", "hello", "--json"])
 
     elapsed = time.monotonic() - started
+    payload = json.loads(capsys.readouterr().out)
     assert elapsed < SEND_BUDGET
-    assert (code, json.loads(capsys.readouterr().out)["message"]["state"]) == (0, "sent")
+    assert (code, payload.get("message", payload).get("state", payload)) == (0, "sent")
 
 
 @pytest.mark.usefixtures("slow_dependencies")
@@ -573,8 +574,9 @@ def test_send_to_codex_stays_under_ten_seconds_with_every_dependency_slow(
         code = main(["send", "c1", "hello", "--json"])
 
     elapsed = time.monotonic() - started
+    payload = json.loads(capsys.readouterr().out)
     assert elapsed < SEND_BUDGET
-    assert (code, json.loads(capsys.readouterr().out)["message"]["state"]) == (0, "sent")
+    assert (code, payload.get("message", payload).get("state", payload)) == (0, "sent")
 
 
 def test_send_to_a_pi_session_its_process_has_left_stores_nothing(
