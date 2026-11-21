@@ -54,7 +54,7 @@ markers = [
 [tool.ruff]
 target-version = "py313"
 line-length = 100
-src = ["src", "tests"]
+src = ["src", "tests", "scripts"]
 extend-exclude = ["spikes"]
 
 [tool.ruff.lint]
@@ -89,7 +89,7 @@ score = false
 
 [tool.mypy]
 python_version = "3.13"
-files = ["src", "tests"]
+files = ["src", "tests", "scripts"]
 exclude = ["^spikes/"]
 strict = true
 
@@ -111,5 +111,8 @@ include = [
     "pyproject.toml",
     "uv.lock",
     "Justfile",
+    "scripts",
+    "CHANGELOG.md",
+    "cliff.toml",
 ]
 exclude = ["docs/plans"]

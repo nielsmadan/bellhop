@@ -16,6 +16,15 @@ bellhop learns which sessions are live from
 receiver's own transcript, and never types into a terminal. Messages are unauthenticated:
 everything runs as one user, and sender names are self-asserted.
 
+## Install
+
+```sh
+brew install nielsmadan/tap/bellhop
+```
+
+[Getting started](docs/user/getting-started.md) has the other ways to install it and what each
+harness needs. Changes are listed in the [changelog](CHANGELOG.md).
+
 ## Usage
 
 ```sh

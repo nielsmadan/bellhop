@@ -15,11 +15,19 @@ files to find sessions and never types into a terminal.
 
 ## 2. Install
 
-From a checkout of this repository:
+With Homebrew:
 
 ```sh
-uv tool install .
+brew install nielsmadan/tap/bellhop
 bellhop --version
+```
+
+Or with uv, from the wheel attached to a
+[release](https://github.com/nielsmadan/bellhop/releases), or from a checkout of this repository:
+
+```sh
+uv tool install https://github.com/nielsmadan/bellhop/releases/download/v0.1.0/bellhop-0.1.0-py3-none-any.whl
+uv tool install .        # from a checkout
 ```
 
 ## 3. Connect each harness

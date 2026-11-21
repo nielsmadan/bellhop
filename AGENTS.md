@@ -22,8 +22,8 @@ just build
 just test
 ```
 
-`just check` runs Ruff lint and formatting checks, Pylint cycle detection, strict mypy over `src`
-and `tests`, and the test suite, including the layering contract in `tests/test_layering.py`. That
+`just check` runs Ruff lint and formatting checks, Pylint cycle detection, strict mypy over `src`,
+`tests` and `scripts`, and the test suite, including the layering contract in `tests/test_layering.py`. That
 test machine-enforces the module dependency contract: layer order, per-module import allowances,
 absolute internal imports, and a stdlib-only runtime. `just coverage` is the 80% branch-coverage
 gate. `just check-static` is the lint, cycle and type pass without the suite. `just smoke` runs the
@@ -33,7 +33,10 @@ dependencies and repository hooks; it does not install `bellhop` globally. `just
 `.cache/typescript` for the Pi extension type-check; it needs npm and the network until that cache
 is filled, and the type-check test skips only where node is missing.
 `just package-check` builds the wheel (uv cache in `.cache/uv`) and checks it carries the Pi
-extension and Claude's MCP config.
+extension and Claude's MCP config. `just release` cuts a release with curtains and
+`just changelog <version>` regenerates `CHANGELOG.md`; [docs/release.md](docs/release.md) has the
+whole path from tag to Homebrew formula. `scripts/release.py` is the release helper the policy and
+the workflow call; it is standard-library only and covered by `tests/test_release.py`.
 
 ## Architecture
 

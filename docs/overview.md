@@ -15,6 +15,7 @@ The [README](../README.md) is the entry page and the CLI synopsis; the user manu
 | Parse bellhop's `--json` output | [JSON output](user/json.md) |
 | Configure agents and let bellhop start them | [Agents](user/agents.md), [ADR 0006](decisions/0006-launching-agents.md) |
 | Work on the code | [AGENTS.md](../AGENTS.md) |
+| Cut a release | [Releasing](release.md) |
 
 ## Maintenance
 
