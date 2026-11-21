@@ -2,6 +2,12 @@
 
 User-facing changes to bellhop. While it is on `0.x`, a minor release may break things.
 
+## 0.1.1 - 2026-11-21
+
+### Fixes
+
+- Start the drainer on Pythons without spawn sessions
+
 ## 0.1.0 - 2026-11-21
 
 ### Features
