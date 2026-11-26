@@ -20,6 +20,7 @@ from typing import IO, Self
 from bellhop.testing.agents import (
     Binary,
     Layout,
+    codex_argv,
     isolated_env,
     launch_argv,
     make_work,
@@ -264,6 +265,7 @@ class SmokeRun:
         extra: Sequence[str] = (),
         prompt: str | None = None,
         env: Mapping[str, str] | None = None,
+        wrapper: Sequence[str] = (),
     ) -> Launched:
         with self.lock:
             if name in self.launched:
@@ -280,6 +282,8 @@ class SmokeRun:
                 prompt=prompt,
                 pi_prefix=pi_prefix,
             )
+            if agent == "codex" and wrapper:
+                command = codex_argv(wrapper, (), [*extra, *([prompt] if prompt else [])])
             pane_env = {"AGENT_REQUIRE_SECRETS": "1", **pi_env, **(env or {})}
             self.tmux.start(name, command, pane_env, work_dir)
             pane_pid, pane_id = self.tmux.pane(name)

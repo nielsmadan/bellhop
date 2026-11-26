@@ -292,6 +292,15 @@ def make_work(layout: Layout, name: str) -> Path:
     return work
 
 
+CODEX_POLICY = ("-a", "on-request", "-s", "read-only")
+
+
+def codex_argv(
+    program: Sequence[str], policy: Sequence[str], arguments: Sequence[str]
+) -> list[str]:
+    return [*program, "-m", MODELS["codex"], *policy, *arguments]
+
+
 def launch_argv(
     binary: Binary,
     sops_exec: Path,
@@ -317,8 +326,7 @@ def launch_argv(
                 *tail,
             ]
         case "codex":
-            policy = ["-a", "on-request", "-s", "read-only"]
-            return [str(binary.path), "-m", MODELS["codex"], *policy, *extra, *tail]
+            return codex_argv([str(binary.path)], CODEX_POLICY, [*extra, *tail])
         case "pi":
             sid = ["--session-id", session_id] if session_id else []
             return [

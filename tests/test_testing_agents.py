@@ -8,6 +8,7 @@ from bellhop.testing.agents import (
     AgentSetupError,
     Binary,
     Layout,
+    codex_argv,
     isolated_env,
     launch_argv,
     make_work,
@@ -215,3 +216,19 @@ def test_claude_home_keeps_what_earlier_sessions_wrote(tmp_path: Path) -> None:
     assert sorted(written["projects"]) == sorted([str(first.resolve()), str(second.resolve())])
     assert written["userID"] == "abc"
     assert list(layout.claude_dir.glob(".*.tmp")) == []
+
+
+def test_a_codex_can_start_through_a_wrapper_with_its_own_policy() -> None:
+    argv = codex_argv(["python", "-m", "bellhop", "codex"], ["-s", "workspace-write"], ["resume"])
+
+    assert argv == [
+        "python",
+        "-m",
+        "bellhop",
+        "codex",
+        "-m",
+        "gpt-6-luna",
+        "-s",
+        "workspace-write",
+        "resume",
+    ]
