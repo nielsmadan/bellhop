@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from bellhop.cli.codex import plan, wrapped
+from bellhop.cli.codex import Remote, for_remote, plan, wrapped
 from bellhop.trace import read_events
 
 FAKE_CODEX = """#!{python}
@@ -182,3 +182,83 @@ def test_a_missing_codex_is_an_error_not_a_traceback(monkeypatch: pytest.MonkeyP
     assert "Traceback" not in wrapped_run.stderr + plain_run.stderr
     assert "cannot run codex" in wrapped_run.stderr
     assert "cannot run codex" in plain_run.stderr
+
+
+SANDBOXED = ["-c", 'sandbox_mode="danger-full-access"', "-c", 'approval_policy="never"']
+FULL = 'sandbox_mode="danger-full-access"'
+NEVER = 'approval_policy="never"'
+AUTO_REVIEWER = ["-c", 'approvals_reviewer="auto_review"']
+ON_REQUEST = 'approval_policy="on-request"'
+WORKSPACE = 'sandbox_mode="workspace-write"'
+
+
+@pytest.mark.parametrize(
+    ("arguments", "remote"),
+    [
+        ([*SANDBOXED, "resume", "t1"], Remote(["resume", "t1"], [], [])),
+        (["-s", "danger-full-access", "resume", "t1"], Remote(["resume", "t1"], ["-c", FULL], [])),
+        (["--sandbox=danger-full-access", "fork", "t1"], Remote(["fork", "t1"], ["-c", FULL], [])),
+        (["-a", "never", "fork", "t1"], Remote(["fork", "t1"], ["-c", NEVER], [])),
+        (
+            ["resume", "--dangerously-bypass-approvals-and-sandbox", "t1"],
+            Remote(["resume", "t1"], ["-c", FULL, "-c", NEVER], []),
+        ),
+        (["--yolo", "fork", "t1"], Remote(["fork", "t1"], ["-c", FULL, "-c", NEVER], [])),
+        (
+            ["resume", "--approve-for-me", "t1"],
+            Remote(["resume", "t1"], [*AUTO_REVIEWER, "-c", ON_REQUEST, "-c", WORKSPACE], []),
+        ),
+        (
+            ["--not-so-yolo", "resume", "t1"],
+            Remote(["resume", "t1"], [*AUTO_REVIEWER, "-c", ON_REQUEST, "-c", WORKSPACE], []),
+        ),
+        (
+            ["-c", "sandbox_workspace_write.network_access=true", "--config=network.x=1", "resume"],
+            Remote(["resume"], [], []),
+        ),
+        (
+            ["-c", 'model_reasoning_effort="high"', "resume", "t1"],
+            Remote(["-c", 'model_reasoning_effort="high"', "resume", "t1"], [], []),
+        ),
+        (
+            ["resume", "--add-dir", "/x", "--add-dir=/y", "t1"],
+            Remote(["resume", "t1"], [], ["--add-dir", "/x", "--add-dir=/y"]),
+        ),
+        (["resume", "t1", "--", "-s"], Remote(["resume", "t1", "--", "-s"], [], [])),
+        ([*SANDBOXED, "hello"], Remote([*SANDBOXED, "hello"], [], [])),
+        (["-s", "danger-full-access"], Remote(["-s", "danger-full-access"], [], [])),
+    ],
+)
+def test_a_resume_or_fork_leaves_permission_overrides_to_the_server(
+    arguments: list[str], remote: Remote
+) -> None:
+    assert for_remote(arguments) == remote
+
+
+@pytest.mark.parametrize(
+    ("arguments", "server_extra", "tui_rest"),
+    [
+        ([*SANDBOXED, "resume", "t1"], SANDBOXED, ["resume", "t1"]),
+        (["-s", "danger-full-access", "fork", "t1"], ["-c", FULL], ["fork", "t1"]),
+    ],
+)
+def test_a_resumed_session_runs_with_its_permissions_on_the_server_only(
+    codex: Path, arguments: list[str], server_extra: list[str], tui_rest: list[str]
+) -> None:
+    done = bellhop_codex(*arguments)
+
+    server, tui = calls(codex)
+    listen = server[-1]
+    assert (done.returncode, done.stderr) == (0, "")
+    assert server == ["app-server", *server_extra, "--listen", listen]
+    assert tui == ["--remote", listen, *tui_rest]
+
+
+def test_a_resume_names_the_options_it_cannot_pass_on(codex: Path) -> None:
+    done = bellhop_codex("resume", "--add-dir", "/x", "t1")
+
+    assert calls(codex)[1][2:] == ["resume", "t1"]
+    assert done.stderr == (
+        "bellhop: codex cannot take --add-dir /x when resuming or forking through an app server; "
+        "left it off\n"
+    )

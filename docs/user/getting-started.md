@@ -74,9 +74,12 @@ bellhop codex
 bellhop codex resume --last
 ```
 
-Every argument goes to `codex` unchanged. `bellhop codex` starts an app server for that session on
-a socket in bellhop's runtime directory, attaches the Codex terminal UI to it, and stops it when
-you quit. A subcommand other than `resume` and `fork` (`exec`, `login`, …) and a Codex that cannot
+Every argument goes to `codex` unchanged, except that on `resume` and `fork` the sandbox and
+approval options go to the app server only: Codex refuses them on a remote resume, and a resumed
+thread keeps the sandbox and approval policy it was saved with. `--add-dir` has no app-server
+form there; bellhop says so and leaves it off. `bellhop codex` starts an app
+server for that session on a socket in bellhop's runtime directory, attaches the Codex terminal
+UI to it, and stops it when you quit. A subcommand other than `resume` and `fork` (`exec`, `login`, …) and a Codex that cannot
 use an app server of bellhop's (`--remote`, `--no-daemon`, `--oss`, `--profile`) run as plain
 `codex`. If the app server cannot start, bellhop says so and starts plain `codex`: the session
 works but cannot be reached.

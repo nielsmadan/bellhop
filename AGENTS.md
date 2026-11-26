@@ -130,7 +130,9 @@ the workflow call; it is standard-library only and covered by `tests/test_releas
   name. `codex_session` is `bellhop _codex_session`, which runs a Codex app server and TUI and
   stops the server when the TUI exits; `cli/codex` is the public `bellhop codex`, which does the
   same for a hand-started session (socket `codex-<pid>.sock`, the caller's `-c`, `--enable` and
-  `--disable` to the server, every argument to the TUI) and falls back to plain `codex` when it
+  `--disable` to the server, every argument to the TUI except, on `resume` and `fork`, the
+  permission options, which go to the server as `-c` settings or are dropped with a warning
+  (`for_remote`)) and falls back to plain `codex` when it
   cannot (`cli/__init__` hands it the arguments before any parsing). Both pass SIGTERM and SIGHUP
   on to the TUI and wait for it. `readiness` mirrors `testing/screens` and is pinned to it
   by a parity test. `cli/waking` holds the CLI side; `store.begin_start`, `finish_start` and
